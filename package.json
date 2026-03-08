@@ -1,0 +1,20 @@
+{
+  "name": "babylon-stealth-prototype",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@babylonjs/core": "^7.48.3"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3",
+    "vite": "^6.1.0",
+    "vitest": "^2.1.8"
+  }
+}

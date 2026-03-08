@@ -1,0 +1,119 @@
+:root {
+  color-scheme: dark;
+  font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: #08111f;
+  color: #e8f2ff;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at top, rgba(89, 136, 255, 0.18), transparent 35%),
+    linear-gradient(180deg, #08111f 0%, #050914 100%);
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+.shell {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 320px;
+  min-height: 100vh;
+}
+
+#game-canvas {
+  width: 100%;
+  height: 100vh;
+  display: block;
+  touch-action: none;
+  outline: none;
+}
+
+.hud {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  padding: 1.5rem;
+  background: rgba(4, 10, 20, 0.86);
+  border-left: 1px solid rgba(142, 186, 255, 0.14);
+  backdrop-filter: blur(14px);
+}
+
+.hud h1,
+.hud h2,
+.hud p {
+  margin: 0;
+}
+
+.subtitle {
+  color: #8db6ff;
+  margin-top: -0.4rem;
+}
+
+.card {
+  padding: 1rem;
+  border-radius: 18px;
+  background: rgba(20, 35, 59, 0.78);
+  border: 1px solid rgba(141, 182, 255, 0.16);
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.22);
+}
+
+.card[data-tone='alert'] {
+  border-color: rgba(255, 116, 116, 0.7);
+  background: rgba(70, 18, 18, 0.82);
+}
+
+.card[data-tone='success'] {
+  border-color: rgba(91, 225, 148, 0.7);
+  background: rgba(15, 56, 33, 0.82);
+}
+
+.card ul {
+  list-style: none;
+  padding: 0;
+  margin: 0.75rem 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+}
+
+.card li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.card span {
+  color: #a9c8ff;
+}
+
+.card strong {
+  color: #f7fbff;
+}
+
+@media (max-width: 980px) {
+  .shell {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(60vh, 1fr) auto;
+  }
+
+  #game-canvas {
+    height: 70vh;
+  }
+
+  .hud {
+    border-left: 0;
+    border-top: 1px solid rgba(142, 186, 255, 0.14);
+  }
+}
