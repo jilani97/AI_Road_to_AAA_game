@@ -54,3 +54,13 @@ export function isTargetVisible(input: VisionCheckInput): boolean {
 
   return angle <= input.fovRadians * 0.5;
 }
+
+/** Returns the normalised 2-D direction from a listener toward a sound source.
+ *  Used by the Ear-dar mechanic to rotate Jax's ears toward guard footsteps.
+ */
+export function soundDirection(listenerPosition: Vector2Like, soundPosition: Vector2Like): Vector2Like {
+  return normalize2({
+    x: soundPosition.x - listenerPosition.x,
+    z: soundPosition.z - listenerPosition.z,
+  });
+}
