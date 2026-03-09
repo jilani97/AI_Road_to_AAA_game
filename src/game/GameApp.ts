@@ -26,6 +26,8 @@ interface GameAppOptions {
   onObjectiveChange: (message: string) => void;
   /** Called each frame with the current Crest-Sonar status string. */
   onSonarChange: (message: string) => void;
+  onWeaponChange?: (weapon: string) => void;
+  onPauseToggle?: (isPaused: boolean) => void;
 }
 
 interface InputState {
@@ -40,6 +42,8 @@ interface GameState {
   hasWon: boolean;
   hasLost: boolean;
   liquidTimeSecured: boolean;
+  isPaused: boolean;
+  currentWeapon: number;
 }
 
 const PLAYER_SPEED = 5.5;
@@ -71,7 +75,13 @@ export class GameApp {
     hasWon: false,
     hasLost: false,
     liquidTimeSecured: false,
+    isPaused: false,
+    currentWeapon: 0,
   };
+
+  private readonly weapons = ['Sting Sword', 'Blaster', 'Sniper', 'Bazooka'];
+  private weaponNodes: TransformNode[] = [];
+  private weaponSocket!: TransformNode;
 
   private readonly playerPivot: TransformNode;
   private readonly playerMesh: Mesh;
@@ -90,6 +100,8 @@ export class GameApp {
   private readonly patrolPoints: Vector3[];
   private readonly colliders: Array<{ x: number, z: number, w: number, d: number, topY: number, bottomY: number }> = [];
   private canDoubleJump = false;
+
+  private readonly projectiles: Array<{ mesh: Mesh, direction: Vector3, speed: number, life: number }> = [];
 
   private activePatrolIndex = 0;
   private lastFrameTime = performance.now();
@@ -121,6 +133,8 @@ export class GameApp {
     this.playerMesh = this.createPlayerMesh();
     this.playerMesh.parent = this.playerPivot;
     this.playerMesh.position = Vector3.Zero();
+
+    this.createWeapons();
 
     this.playerShadowMesh = MeshBuilder.CreateDisc(
       'playerShadow',
@@ -414,6 +428,68 @@ export class GameApp {
     return implant;
   }
 
+  private createWeapons(): void {
+    this.weaponSocket = new TransformNode('weaponSocket', this.scene);
+    this.weaponSocket.parent = this.playerPivot;
+    // Offset the socket relative to the pivot so it aligns with the right arm/hand area
+    this.weaponSocket.position = new Vector3(0.5, 0.9, 0.4);
+
+    // 0: Sword - Loaded from OBJ
+    const swordNode = new TransformNode('weapon_sword_root', this.scene);
+    swordNode.parent = this.weaponSocket;
+    
+    // Attempting to load the sword model
+    SceneLoader.ImportMeshAsync("", "/models/", "Sting-Sword-lowpoly.obj", this.scene).then((result) => {
+      // Typically the actual geometry is in meshes[0] or meshes[1]
+      const root = result.meshes[0];
+      // Object may be scaled huge or tiny by the artist
+      root.scaling = new Vector3(0.015, 0.015, 0.015);
+      
+      // The sword point might face down or sideways, angle it properly forward
+      root.rotation = new Vector3(Math.PI / 2, Math.PI / 2, 0); 
+      
+      // Add all meshes to the root node so we can toggle them easily
+      result.meshes.forEach(m => m.parent = swordNode);
+    }).catch(err => console.error("Failed to load Sting-Sword:", err));
+
+    // 1: Blaster - A small compact gun
+    const blaster = MeshBuilder.CreateBox('weapon_blaster', { width: 0.15, height: 0.25, depth: 0.5 }, this.scene);
+    blaster.parent = this.weaponSocket;
+    const blasterMat = new StandardMaterial('blasterMat', this.scene);
+    blasterMat.diffuseColor = new Color3(0.8, 0.2, 0.2);
+    blaster.material = blasterMat;
+
+    // 2: Sniper - A long barrel rifle
+    const sniper = MeshBuilder.CreateCylinder('weapon_sniper', { diameter: 0.1, height: 1.5, tessellation: 8 }, this.scene);
+    sniper.parent = this.weaponSocket;
+    sniper.rotation.x = Math.PI / 2;
+    sniper.position.z = 0.5; // push barrel outward
+    const sniperMat = new StandardMaterial('sniperMat', this.scene);
+    sniperMat.diffuseColor = new Color3(0.2, 0.2, 0.8);
+    sniper.material = sniperMat;
+
+    // 3: Bazooka - A thick tube
+    const bazooka = MeshBuilder.CreateCylinder('weapon_bazooka', { diameter: 0.3, height: 1.2, tessellation: 12 }, this.scene);
+    bazooka.parent = this.weaponSocket;
+    bazooka.rotation.x = Math.PI / 2;
+    bazooka.position.z = 0.2; // push outward
+    const bazookaMat = new StandardMaterial('bazookaMat', this.scene);
+    bazookaMat.diffuseColor = new Color3(0.8, 0.5, 0.1);
+    bazooka.material = bazookaMat;
+
+    this.weaponNodes = [swordNode, blaster, sniper, bazooka];
+
+    for (let i = 0; i < this.weaponNodes.length; i++) {
+      const w = this.weaponNodes[i];
+      // Note: for swordNode this sets the node enable/disable
+      w.setEnabled(i === this.state.currentWeapon);
+    }
+    
+    if (this.options.onWeaponChange) {
+      this.options.onWeaponChange(this.weapons[this.state.currentWeapon]);
+    }
+  }
+
   /** Baron von Steer's guard — larger, darker, more threatening. */
   private createGuardMesh(): Mesh {
     // Create an invisible dummy base to attach the GLB model
@@ -433,7 +509,7 @@ export class GameApp {
       golem.position.y = 0.3; // Lifted guard up so its feet touch the floor perfectly
       
       // Rotate 180 degrees if the model faces backward by default
-      golem.rotation = new Vector3(0, Math.PI, 0);
+      golem.rotation = new Vector3(0, 0, 0); // Removed the Math.PI rotation so it faces forward along its pivot
 
       // If there are animations (like walk cycle), play the first one
       if (result.animationGroups && result.animationGroups.length > 0) {
@@ -489,6 +565,13 @@ export class GameApp {
   }
 
   private registerInput(): void {
+    this.scene.onPointerDown = (evt) => {
+      // Left click (0) to use weapon
+      if (evt.button === 0 && !this.state.isPaused && !this.state.hasLost && !this.state.hasWon) {
+        this.useWeapon();
+      }
+    };
+
     window.addEventListener('keydown', (event) => {
       if (event.repeat) {
         return;
@@ -528,6 +611,21 @@ export class GameApp {
             this.reset();
           }
           break;
+        case 'Digit1':
+          this.switchWeapon(0);
+          break;
+        case 'Digit2':
+          this.switchWeapon(1);
+          break;
+        case 'Digit3':
+          this.switchWeapon(2);
+          break;
+        case 'Digit4':
+          this.switchWeapon(3);
+          break;
+        case 'Escape':
+          this.togglePause();
+          break;
         default:
           break;
       }
@@ -557,13 +655,110 @@ export class GameApp {
     });
   }
 
+  private switchWeapon(index: number): void {
+    if (this.state.isPaused || this.state.hasLost || this.state.hasWon) return;
+    if (index >= 0 && index < this.weaponNodes.length) {
+      this.state.currentWeapon = index;
+      for (let i = 0; i < this.weaponNodes.length; i++) {
+        this.weaponNodes[i].setEnabled(i === index);
+      }
+      if (this.options.onWeaponChange) {
+        this.options.onWeaponChange(this.weapons[index]);
+      }
+    }
+  }
+
+  public togglePause(): void {
+    if (this.state.hasLost || this.state.hasWon) return;
+    this.state.isPaused = !this.state.isPaused;
+    if (this.options.onPauseToggle) {
+      this.options.onPauseToggle(this.state.isPaused);
+    }
+    
+    // Stop animations if paused
+    if (this.state.isPaused) {
+      const currentAnim = this.playerAnimations.get(this.currentPlayerAnimation);
+      if (currentAnim) currentAnim.pause();
+    } else {
+      const currentAnim = this.playerAnimations.get(this.currentPlayerAnimation);
+      if (currentAnim) currentAnim.play(true);
+      // Reset delta time to avoid jumping logic when unpaused
+      this.lastFrameTime = performance.now();
+    }
+  }
+
   private update(deltaSeconds: number): void {
+    if (this.state.isPaused) return;
+
     this.updatePlayer(deltaSeconds);
     this.updateGuard(deltaSeconds);
     this.updateLiquidTimeVial(deltaSeconds);
+    this.updateProjectiles(deltaSeconds);
     this.updateSonar();
     this.updateCamera();
     this.evaluateGameState();
+  }
+
+  private useWeapon(): void {
+    const weaponIndex = this.state.currentWeapon;
+    const playerPos = this.playerPivot.position.clone();
+    playerPos.y += 1.0; // Shoot from chest/weapon height
+
+    // Determine direction player is facing
+    const facingDirection = new Vector3(
+      Math.sin(this.playerPivot.rotation.y),
+      0,
+      Math.cos(this.playerPivot.rotation.y)
+    );
+
+    if (weaponIndex === 0) {
+      // Sword 'swing' - a short-lived crescent or simply push the guard if close
+      this.spawnProjectile(playerPos, facingDirection, 15, 0.2, new Color3(0.2, 0.8, 0.2), 0.8);
+    } else if (weaponIndex === 1) {
+      // Blaster - fast small laser
+      this.spawnProjectile(playerPos, facingDirection, 25, 2.0, new Color3(0.8, 0.2, 0.2), 0.2);
+    } else if (weaponIndex === 2) {
+      // Sniper - extremely fast, long-range
+      this.spawnProjectile(playerPos, facingDirection, 50, 3.0, new Color3(0.2, 0.2, 0.8), 0.1);
+    } else if (weaponIndex === 3) {
+      // Bazooka - slow, big explosive rocket
+      this.spawnProjectile(playerPos, facingDirection, 10, 4.0, new Color3(0.8, 0.5, 0.1), 0.6);
+    }
+  }
+
+  private spawnProjectile(pos: Vector3, dir: Vector3, speed: number, life: number, color: Color3, size: number): void {
+    const proj = MeshBuilder.CreateSphere('projectile', { diameter: size }, this.scene);
+    proj.position = pos;
+    const mat = new StandardMaterial('projMat', this.scene);
+    mat.emissiveColor = color;
+    mat.diffuseColor = color;
+    proj.material = mat;
+
+    this.projectiles.push({ mesh: proj, direction: dir, speed, life });
+  }
+
+  private updateProjectiles(deltaSeconds: number): void {
+    for (let i = this.projectiles.length - 1; i >= 0; i--) {
+      const p = this.projectiles[i];
+      p.life -= deltaSeconds;
+      
+      if (p.life <= 0) {
+        p.mesh.dispose();
+        this.projectiles.splice(i, 1);
+        continue;
+      }
+
+      // Move projectile
+      p.mesh.position.addInPlace(p.direction.scale(p.speed * deltaSeconds));
+
+      // Simple collision with guard
+      if (this.guardPivot && Vector3.Distance(p.mesh.position, this.guardPivot.position.add(new Vector3(0, 1, 0))) < 1.0) {
+        // Impact! Stun or push guard back
+        this.guardPivot.position.addInPlace(p.direction.scale(2.0)); // push guard
+        p.mesh.dispose();
+        this.projectiles.splice(i, 1);
+      }
+    }
   }
 
   private setPlayerAnimation(name: string): void {
