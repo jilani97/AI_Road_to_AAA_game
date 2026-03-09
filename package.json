@@ -10,7 +10,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@babylonjs/core": "^7.48.3"
+    "@babylonjs/core": "^7.48.3",
+    "@babylonjs/loaders": "^7.54.3"
   },
   "devDependencies": {
     "typescript": "^5.6.3",

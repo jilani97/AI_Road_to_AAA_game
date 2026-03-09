@@ -56,7 +56,7 @@ export function isTargetVisible(input: VisionCheckInput): boolean {
 }
 
 /** Returns the normalised 2-D direction from a listener toward a sound source.
- *  Used by the Ear-dar mechanic to rotate Jax's ears toward guard footsteps.
+ *  Used by the Crestal Sonar mechanic to track threat directions.
  */
 export function soundDirection(listenerPosition: Vector2Like, soundPosition: Vector2Like): Vector2Like {
   return normalize2({

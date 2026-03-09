@@ -116,12 +116,12 @@ select {
   color: #ffe066;
 }
 
-.eardar-card {
+.sonar-card {
   border-color: rgba(0, 210, 230, 0.32);
   background: rgba(0, 22, 28, 0.86);
 }
 
-.eardar-card h2 {
+.sonar-card h2 {
   color: #00d4e8;
   font-size: 0.82rem;
   letter-spacing: 0.1em;
@@ -129,7 +129,7 @@ select {
   margin-bottom: 0.4rem;
 }
 
-.eardar-card #eardar-status {
+.sonar-card #sonar-status {
   font-size: 0.88rem;
   color: #a0e8f0;
 }
