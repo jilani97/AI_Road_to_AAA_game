@@ -1,5 +1,14 @@
 import './style.css';
 import { GameApp } from './game/GameApp';
+import {
+  loadSettings,
+  saveSettings,
+  type CameraMinDistance,
+  type CameraMode,
+  type GameSettings,
+  type PostFxSettings,
+  type ShadowTier,
+} from './game/settings';
 
 const appRoot = document.querySelector<HTMLDivElement>('#app');
 
@@ -48,8 +57,35 @@ appRoot.innerHTML = `
       <button id="btn-restart">Restart Level</button>
       <div class="settings">
         <h3>Graphic Settings</h3>
-        <label><input type="checkbox" id="chk-shadows" checked> Enable Shadows</label>
-        <label><input type="checkbox" id="chk-postfx" checked> Enable Post-Processing</label>
+        <div class="setting-group">
+          <span class="setting-label">Shadows</span>
+          <div class="segmented" role="radiogroup" aria-label="Shadow quality">
+            <label><input type="radio" name="shadow-tier" value="low"> Low</label>
+            <label><input type="radio" name="shadow-tier" value="med"> Med</label>
+            <label><input type="radio" name="shadow-tier" value="high"> High</label>
+          </div>
+        </div>
+        <div class="setting-group">
+          <span class="setting-label">Post-Processing</span>
+          <label class="setting-toggle"><input type="checkbox" id="chk-bloom"> Bloom</label>
+          <label class="setting-toggle"><input type="checkbox" id="chk-fxaa"> FXAA</label>
+          <label class="setting-toggle"><input type="checkbox" id="chk-chromatic"> Chromatic Aberration</label>
+        </div>
+        <div class="setting-group">
+          <span class="setting-label">Camera Mode</span>
+          <div class="segmented" role="radiogroup" aria-label="Camera mode">
+            <label><input type="radio" name="camera-mode" value="orbit"> Orbit</label>
+            <label><input type="radio" name="camera-mode" value="fade"> Fade</label>
+          </div>
+        </div>
+        <div class="setting-group">
+          <span class="setting-label">Min Camera Distance</span>
+          <div class="segmented" role="radiogroup" aria-label="Min camera distance">
+            <label><input type="radio" name="camera-min" value="2"> 2 m</label>
+            <label><input type="radio" name="camera-min" value="4"> 4 m</label>
+            <label><input type="radio" name="camera-min" value="8"> 8 m</label>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -102,4 +138,94 @@ btnRestart.addEventListener('click', () => {
   window.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyR' }));
 });
 
+const shadowTierInputs = Array.from(
+  document.querySelectorAll<HTMLInputElement>('input[name="shadow-tier"]'),
+);
+const postFxInputs: Record<keyof PostFxSettings, HTMLInputElement | null> = {
+  bloom: document.querySelector<HTMLInputElement>('#chk-bloom'),
+  fxaa: document.querySelector<HTMLInputElement>('#chk-fxaa'),
+  chromaticAberration: document.querySelector<HTMLInputElement>('#chk-chromatic'),
+};
+const cameraModeInputs = Array.from(
+  document.querySelectorAll<HTMLInputElement>('input[name="camera-mode"]'),
+);
+const cameraMinInputs = Array.from(
+  document.querySelectorAll<HTMLInputElement>('input[name="camera-min"]'),
+);
+
+let settings: GameSettings = loadSettings();
+
+function applySettings(): void {
+  game.applyGraphicsSettings(settings);
+  game.applyCameraSettings(settings.camera);
+}
+
+function hydrateGraphicsControls(current: GameSettings): void {
+  for (const input of shadowTierInputs) {
+    input.checked = input.value === current.shadowTier;
+  }
+  if (postFxInputs.bloom) postFxInputs.bloom.checked = current.postfx.bloom;
+  if (postFxInputs.fxaa) postFxInputs.fxaa.checked = current.postfx.fxaa;
+  if (postFxInputs.chromaticAberration)
+    postFxInputs.chromaticAberration.checked = current.postfx.chromaticAberration;
+  for (const input of cameraModeInputs) {
+    input.checked = input.value === current.camera.mode;
+  }
+  for (const input of cameraMinInputs) {
+    input.checked = Number(input.value) === current.camera.minDistance;
+  }
+}
+
+hydrateGraphicsControls(settings);
+
+for (const input of shadowTierInputs) {
+  input.addEventListener('change', () => {
+    if (!input.checked) return;
+    settings = { ...settings, shadowTier: input.value as ShadowTier };
+    saveSettings(settings);
+    applySettings();
+  });
+}
+
+for (const key of Object.keys(postFxInputs) as Array<keyof PostFxSettings>) {
+  const input = postFxInputs[key];
+  if (!input) continue;
+  input.addEventListener('change', () => {
+    settings = {
+      ...settings,
+      postfx: { ...settings.postfx, [key]: input.checked },
+    };
+    saveSettings(settings);
+    applySettings();
+  });
+}
+
+for (const input of cameraModeInputs) {
+  input.addEventListener('change', () => {
+    if (!input.checked) return;
+    settings = {
+      ...settings,
+      camera: { ...settings.camera, mode: input.value as CameraMode },
+    };
+    saveSettings(settings);
+    applySettings();
+  });
+}
+
+for (const input of cameraMinInputs) {
+  input.addEventListener('change', () => {
+    if (!input.checked) return;
+    settings = {
+      ...settings,
+      camera: {
+        ...settings.camera,
+        minDistance: Number(input.value) as CameraMinDistance,
+      },
+    };
+    saveSettings(settings);
+    applySettings();
+  });
+}
+
 game.start();
+applySettings();

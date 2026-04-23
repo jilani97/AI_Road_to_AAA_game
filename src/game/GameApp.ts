@@ -4,6 +4,7 @@ import {
   ArcRotateCamera,
   Color3,
   Color4,
+  DefaultRenderingPipeline,
   DirectionalLight,
   Engine,
   HemisphericLight,
@@ -13,6 +14,7 @@ import {
   Quaternion,
   Scene,
   SceneLoader,
+  ShadowGenerator,
   StandardMaterial,
   TransformNode,
   Vector3,
@@ -20,6 +22,14 @@ import {
 import '@babylonjs/loaders/glTF';
 import '@babylonjs/loaders/OBJ';
 import { isTargetVisible, soundDirection } from './stealth';
+import { SHADOW_MAP_SIZE, type CameraSettings, type GameSettings } from './settings';
+import {
+  colliderToAabb,
+  distance3,
+  raycastHitsAnyAabb,
+  segmentHitsAabb,
+  type Aabb,
+} from './collision';
 
 export type StatusTone = 'neutral' | 'alert' | 'success';
 type GuardAnimationRole = 'idle' | 'patrol' | 'alert' | 'hit' | 'defeated';
@@ -63,6 +73,12 @@ const GRAVITY = 22;
 const SONAR_RANGE = 13;
 const GUARD_HIT_RECOVERY_SECONDS = 0.45;
 const DEFAULT_WEAPON_SOCKET_POSITION = new Vector3(0.5, 0.9, 0.4);
+const PROJECTILE_HIT_FADE_SECONDS = 0.15;
+const BAZOOKA_WEAPON_INDEX = 3;
+const BAZOOKA_EXPLOSION_RADIUS = 2.5;
+const SWORD_RANGE = 3.0;
+/** Eye height above player pivot used for sword line-of-sight raycasts. */
+const PLAYER_EYE_HEIGHT = 1.0;
 
 export class GameApp {
   private readonly engine: Engine;
@@ -107,9 +123,25 @@ export class GameApp {
   private readonly liquidTimeVial: Mesh;
   private readonly patrolPoints: Vector3[];
   private readonly colliders: Array<{ x: number, z: number, w: number, d: number, topY: number, bottomY: number }> = [];
+  /** Parallel to `colliders` — the mesh each collider belongs to (for fade/collision wiring). */
+  private readonly colliderMeshes: Array<AbstractMesh | null> = [];
   private canDoubleJump = false;
 
-  private readonly projectiles: Array<{ mesh: Mesh, direction: Vector3, speed: number, life: number }> = [];
+  private readonly projectiles: Array<{
+    mesh: Mesh;
+    direction: Vector3;
+    speed: number;
+    life: number;
+    weaponIndex: number;
+    dying: number;
+  }> = [];
+  private readonly sparkBursts: Array<{
+    mesh: Mesh;
+    velocity: Vector3;
+    life: number;
+    maxLife: number;
+  }> = [];
+  private colliderAabbs: Aabb[] = [];
 
   private activePatrolIndex = 0;
   private lastFrameTime = performance.now();
@@ -123,6 +155,13 @@ export class GameApp {
   private readonly guardAnimationBindings: Partial<Record<GuardAnimationRole, string>> = {};
   private currentGuardAnimation = '';
   private guardHitRecovery = 0;
+
+  private sun!: DirectionalLight;
+  private shadowGenerator: ShadowGenerator | null = null;
+  private pipeline: DefaultRenderingPipeline | null = null;
+  private currentShadowTier: GameSettings['shadowTier'] | null = null;
+  private cameraMode: CameraSettings['mode'] = 'orbit';
+  private readonly fadedMeshes: Set<AbstractMesh> = new Set();
 
   constructor(options: GameAppOptions) {
     this.options = options;
@@ -138,7 +177,15 @@ export class GameApp {
 
     this.camera = this.createCamera(options.canvas);
     this.setupLighting();
+
+    // Auto-enroll meshes with the active shadow generator as they're added to the scene.
+    // This covers async-loaded GLBs (player, guard) without touching every loader callback.
+    this.scene.onNewMeshAddedObservable.add((mesh) => {
+      this.applyShadowRoleToMesh(mesh);
+    });
+
     this.buildEnvironment();
+    this.colliderAabbs = this.colliders.map(colliderToAabb);
 
     this.playerPivot = new TransformNode('playerPivot', this.scene);
     this.playerPivot.position = new Vector3(-8, 1.2, -8);
@@ -254,6 +301,121 @@ export class GameApp {
     sun.intensity = 1.25;
     // Cool moonlight tone
     sun.diffuse = new Color3(0.65, 0.78, 1.0);
+    this.sun = sun;
+  }
+
+  /** Meshes that are invisible helpers or would fight the shadow pass. */
+  private static readonly NON_SHADOW_NAMES = /^(playerHitbox|playerShadow|visionCone|wall|trim_|spark_)/;
+  /** Static environment that should receive but not cast shadows. */
+  private static readonly SHADOW_RECEIVER_NAMES =
+    /^(roof|b_|centralPad|raisedRoof|objectiveRoof|pipePlatform|wireBridge|vent|bridgePole|pipeCol)/;
+
+  private applyShadowRoleToMesh(mesh: AbstractMesh): void {
+    if (!this.shadowGenerator || !mesh.name) return;
+    if (GameApp.NON_SHADOW_NAMES.test(mesh.name)) return;
+    if (GameApp.SHADOW_RECEIVER_NAMES.test(mesh.name)) {
+      mesh.receiveShadows = true;
+      return;
+    }
+    this.shadowGenerator.addShadowCaster(mesh, false);
+  }
+
+  public applyGraphicsSettings(settings: GameSettings): void {
+    const mapSize = SHADOW_MAP_SIZE[settings.shadowTier];
+
+    if (!this.shadowGenerator || this.currentShadowTier !== settings.shadowTier) {
+      this.shadowGenerator?.dispose();
+      this.shadowGenerator = new ShadowGenerator(mapSize, this.sun);
+      this.shadowGenerator.useBlurExponentialShadowMap = true;
+      this.shadowGenerator.blurKernel = 24;
+      this.shadowGenerator.bias = 0.002;
+      this.currentShadowTier = settings.shadowTier;
+
+      for (const mesh of this.scene.meshes) {
+        this.applyShadowRoleToMesh(mesh);
+      }
+      // The decorative disc under the player is redundant once real shadows render.
+      this.playerShadowMesh.isVisible = false;
+    }
+
+    if (!this.pipeline) {
+      this.pipeline = new DefaultRenderingPipeline(
+        'defaultPipeline',
+        true,
+        this.scene,
+        [this.camera],
+      );
+      this.pipeline.bloomThreshold = 0.85;
+      this.pipeline.bloomWeight = 0.4;
+      // Default aberration (30) is too harsh for a stealth game; moderate it.
+      this.pipeline.chromaticAberration.aberrationAmount = 10;
+    }
+    this.pipeline.bloomEnabled = settings.postfx.bloom;
+    this.pipeline.fxaaEnabled = settings.postfx.fxaa;
+    this.pipeline.chromaticAberrationEnabled = settings.postfx.chromaticAberration;
+  }
+
+  public applyCameraSettings(settings: CameraSettings): void {
+    this.camera.lowerRadiusLimit = settings.minDistance;
+    if (this.camera.radius < settings.minDistance) {
+      this.camera.radius = settings.minDistance;
+    }
+
+    const switchingOutOfFade = this.cameraMode === 'fade' && settings.mode !== 'fade';
+    this.cameraMode = settings.mode;
+
+    if (switchingOutOfFade) {
+      for (const mesh of this.fadedMeshes) {
+        mesh.visibility = 1.0;
+      }
+      this.fadedMeshes.clear();
+    }
+
+    if (settings.mode === 'orbit') {
+      this.scene.collisionsEnabled = true;
+      this.camera.checkCollisions = true;
+      for (const mesh of this.colliderMeshes) {
+        if (mesh) mesh.checkCollisions = true;
+      }
+    } else {
+      this.camera.checkCollisions = false;
+      for (const mesh of this.colliderMeshes) {
+        if (mesh) mesh.checkCollisions = false;
+      }
+    }
+  }
+
+  private updateCameraFade(): void {
+    if (this.cameraMode !== 'fade') return;
+
+    const origin = {
+      x: this.camera.position.x,
+      y: this.camera.position.y,
+      z: this.camera.position.z,
+    };
+    const target = {
+      x: this.playerPivot.position.x,
+      y: this.playerPivot.position.y + PLAYER_EYE_HEIGHT,
+      z: this.playerPivot.position.z,
+    };
+
+    const obstructing = new Set<AbstractMesh>();
+    for (let i = 0; i < this.colliderAabbs.length; i++) {
+      const mesh = this.colliderMeshes[i];
+      if (!mesh) continue;
+      if (segmentHitsAabb(origin, target, this.colliderAabbs[i])) {
+        obstructing.add(mesh);
+      }
+    }
+
+    for (const mesh of this.fadedMeshes) {
+      if (!obstructing.has(mesh)) mesh.visibility = 1.0;
+    }
+    for (const mesh of obstructing) {
+      mesh.visibility = 0.35;
+    }
+    this.fadedMeshes.clear();
+    for (const mesh of obstructing) this.fadedMeshes.add(mesh);
   }
 
   private buildEnvironment(): void {
@@ -273,8 +435,17 @@ export class GameApp {
     const roof = MeshBuilder.CreateGround('roof', { width: 56, height: 56 }, this.scene);
     roof.material = rooftopMaterial;
 
-    const addCollider = (x: number, z: number, w: number, d: number, topY: number, bottomY: number = -100) => {
+    const addCollider = (
+      mesh: AbstractMesh | null,
+      x: number,
+      z: number,
+      w: number,
+      d: number,
+      topY: number,
+      bottomY: number = -100,
+    ) => {
       this.colliders.push({ x, z, w, d, topY, bottomY });
+      this.colliderMeshes.push(mesh);
     };
 
     // Construct the city blocks
@@ -311,32 +482,32 @@ export class GameApp {
       const mesh = MeshBuilder.CreateBox(b.name, { width: b.w, height: b.h, depth: b.d }, this.scene);
       mesh.position = new Vector3(b.x, b.y, b.z);
       mesh.material = b.mat;
-      addCollider(b.x, b.z, b.w, b.d, b.top, -100);
+      addCollider(mesh, b.x, b.z, b.w, b.d, b.top, -100);
     });
 
     // Elevated platforms (jump-throughable from below if high enough)
     const pipePlatform = MeshBuilder.CreateBox('pipePlatform', { width: 4, height: 0.25, depth: 4 }, this.scene);
     pipePlatform.position = new Vector3(6.5, 2.0, -5.5);
     pipePlatform.material = neonTrimMaterial;
-    addCollider(6.5, -5.5, 4, 4, 2.125, 1.875);
+    addCollider(pipePlatform, 6.5, -5.5, 4, 4, 2.125, 1.875);
 
     for (const [px, pz] of [[4.8, -3.8], [8.2, -3.8], [4.8, -7.2], [8.2, -7.2]]) {
       const col = MeshBuilder.CreateCylinder(`pipeCol_${px}_${pz}`, { diameter: 0.32, height: 2.0, tessellation: 8 }, this.scene);
       col.position = new Vector3(px, 1.0, pz);
       col.material = rooftopMaterial;
-      addCollider(px, pz, 0.4, 0.4, 2.0, -100);
+      addCollider(col, px, pz, 0.4, 0.4, 2.0, -100);
     }
 
     const wireBridge = MeshBuilder.CreateBox('wireBridge', { width: 2, height: 0.18, depth: 8 }, this.scene);
     wireBridge.position = new Vector3(-4.5, 2.0, 0);
     wireBridge.material = neonTrimMaterial;
-    addCollider(-4.5, 0, 2, 8, 2.09, 1.91);
+    addCollider(wireBridge, -4.5, 0, 2, 8, 2.09, 1.91);
 
     for (const bz of [-3.5, 3.5]) {
       const pole = MeshBuilder.CreateCylinder(`bridgePole_${bz}`, { diameter: 0.22, height: 2.0, tessellation: 8 }, this.scene);
       pole.position = new Vector3(-4.5, 1.0, bz);
       pole.material = rooftopMaterial;
-      addCollider(-4.5, bz, 0.4, 0.4, 2.0, -100);
+      addCollider(pole, -4.5, bz, 0.4, 0.4, 2.0, -100);
     }
 
     // Perimeter walls
@@ -791,7 +962,9 @@ export class GameApp {
     this.updateGuard(deltaSeconds);
     this.updateLiquidTimeVial(deltaSeconds);
     this.updateProjectiles(deltaSeconds);
+    this.updateSparkBursts(deltaSeconds);
     this.updateSonar();
+    this.updateCameraFade();
     this.updateCamera();
     this.evaluateGameState();
   }
@@ -830,29 +1003,50 @@ export class GameApp {
         this.isAttacking = false;
       }
 
-      // Check melee distance to push the guard back
+      // Check melee distance and line-of-sight before landing the hit — a vent
+      // between the player and the guard should block the swing.
       const dist = Vector3.Distance(this.playerPivot.position, this.guardPivot.position);
-      if (dist < 3.0) {
-        const pushDir = this.guardPivot.position.subtract(this.playerPivot.position);
-        pushDir.y = 0;
-        pushDir.normalize();
-        this.guardPivot.position.addInPlace(pushDir.scale(2.0)); // Knockback guard
-        this.triggerGuardHitReaction();
+      if (dist < SWORD_RANGE) {
+        const origin = {
+          x: this.playerPivot.position.x,
+          y: this.playerPivot.position.y + PLAYER_EYE_HEIGHT,
+          z: this.playerPivot.position.z,
+        };
+        const target = {
+          x: this.guardPivot.position.x,
+          y: this.guardPivot.position.y + PLAYER_EYE_HEIGHT,
+          z: this.guardPivot.position.z,
+        };
+        if (!raycastHitsAnyAabb(origin, target, this.colliderAabbs)) {
+          const pushDir = this.guardPivot.position.subtract(this.playerPivot.position);
+          pushDir.y = 0;
+          pushDir.normalize();
+          this.guardPivot.position.addInPlace(pushDir.scale(2.0));
+          this.triggerGuardHitReaction();
+        }
       }
 
     } else if (weaponIndex === 1) {
       // Blaster - fast small laser
-      this.spawnProjectile(playerPos, facingDirection, 25, 2.0, new Color3(0.8, 0.2, 0.2), 0.2);
+      this.spawnProjectile(playerPos, facingDirection, 25, 2.0, new Color3(0.8, 0.2, 0.2), 0.2, weaponIndex);
     } else if (weaponIndex === 2) {
       // Sniper - extremely fast, long-range
-      this.spawnProjectile(playerPos, facingDirection, 50, 3.0, new Color3(0.2, 0.2, 0.8), 0.1);
-    } else if (weaponIndex === 3) {
+      this.spawnProjectile(playerPos, facingDirection, 50, 3.0, new Color3(0.2, 0.2, 0.8), 0.1, weaponIndex);
+    } else if (weaponIndex === BAZOOKA_WEAPON_INDEX) {
       // Bazooka - slow, big explosive rocket
-      this.spawnProjectile(playerPos, facingDirection, 10, 4.0, new Color3(0.8, 0.5, 0.1), 0.6);
+      this.spawnProjectile(playerPos, facingDirection, 10, 4.0, new Color3(0.8, 0.5, 0.1), 0.6, weaponIndex);
     }
   }
 
-  private spawnProjectile(pos: Vector3, dir: Vector3, speed: number, life: number, color: Color3, size: number): void {
+  private spawnProjectile(
+    pos: Vector3,
+    dir: Vector3,
+    speed: number,
+    life: number,
+    color: Color3,
+    size: number,
+    weaponIndex: number,
+  ): void {
     const proj = MeshBuilder.CreateSphere('projectile', { diameter: size }, this.scene);
     proj.position = pos;
     const mat = new StandardMaterial('projMat', this.scene);
@@ -860,30 +1054,138 @@ export class GameApp {
     mat.diffuseColor = color;
     proj.material = mat;
 
-    this.projectiles.push({ mesh: proj, direction: dir, speed, life });
+    this.projectiles.push({
+      mesh: proj,
+      direction: dir,
+      speed,
+      life,
+      weaponIndex,
+      dying: 0,
+    });
   }
 
   private updateProjectiles(deltaSeconds: number): void {
     for (let i = this.projectiles.length - 1; i >= 0; i--) {
       const p = this.projectiles[i];
+
+      if (p.dying > 0) {
+        p.dying -= deltaSeconds;
+        const scale = Math.max(0.001, p.dying / PROJECTILE_HIT_FADE_SECONDS);
+        p.mesh.scaling.setAll(scale);
+        if (p.dying <= 0) {
+          p.mesh.dispose();
+          this.projectiles.splice(i, 1);
+        }
+        continue;
+      }
+
       p.life -= deltaSeconds;
-      
       if (p.life <= 0) {
         p.mesh.dispose();
         this.projectiles.splice(i, 1);
         continue;
       }
 
-      // Move projectile
+      const prev = { x: p.mesh.position.x, y: p.mesh.position.y, z: p.mesh.position.z };
       p.mesh.position.addInPlace(p.direction.scale(p.speed * deltaSeconds));
+      const current = { x: p.mesh.position.x, y: p.mesh.position.y, z: p.mesh.position.z };
 
-      // Simple collision with guard
-      if (this.guardPivot && Vector3.Distance(p.mesh.position, this.guardPivot.position.add(new Vector3(0, 1, 0))) < 1.0) {
-        // Impact! Stun or push guard back
-        this.guardPivot.position.addInPlace(p.direction.scale(2.0)); // push guard
-        this.triggerGuardHitReaction();
-        p.mesh.dispose();
-        this.projectiles.splice(i, 1);
+      // Environment collision (segment test prevents tunnelling on fast shots).
+      const hitEnvironment = this.colliderAabbs.some((box) =>
+        segmentHitsAabb(prev, current, box),
+      );
+      if (hitEnvironment) {
+        this.handleProjectileImpact(p, p.mesh.position.clone());
+        continue;
+      }
+
+      // Guard sphere check — unchanged from the previous behaviour.
+      if (
+        this.guardPivot &&
+        Vector3.Distance(p.mesh.position, this.guardPivot.position.add(new Vector3(0, 1, 0))) < 1.0
+      ) {
+        if (p.weaponIndex !== BAZOOKA_WEAPON_INDEX) {
+          // direct hit — bazooka AoE handles its own push
+          this.guardPivot.position.addInPlace(p.direction.scale(2.0));
+          this.triggerGuardHitReaction();
+        }
+        this.handleProjectileImpact(p, p.mesh.position.clone());
+      }
+    }
+  }
+
+  private handleProjectileImpact(
+    p: (typeof this.projectiles)[number],
+    position: Vector3,
+  ): void {
+    this.spawnSparkBurst(position, (p.mesh.material as StandardMaterial).emissiveColor.clone());
+    if (p.weaponIndex === BAZOOKA_WEAPON_INDEX) {
+      this.triggerExplosion(position);
+    }
+    p.dying = PROJECTILE_HIT_FADE_SECONDS;
+  }
+
+  private triggerExplosion(center: Vector3): void {
+    const centerP = { x: center.x, y: center.y, z: center.z };
+    const guardChest = {
+      x: this.guardPivot.position.x,
+      y: this.guardPivot.position.y + 1,
+      z: this.guardPivot.position.z,
+    };
+    if (distance3(centerP, guardChest) <= BAZOOKA_EXPLOSION_RADIUS) {
+      const push = this.guardPivot.position.subtract(center);
+      push.y = 0;
+      if (push.lengthSquared() > 1e-6) {
+        push.normalize();
+        this.guardPivot.position.addInPlace(push.scale(2.5));
+      }
+      this.triggerGuardHitReaction();
+    }
+    // Larger, orange spark burst for the explosion itself.
+    this.spawnSparkBurst(center, new Color3(1.0, 0.55, 0.15), 16, 0.55);
+  }
+
+  private spawnSparkBurst(
+    position: Vector3,
+    color: Color3,
+    count: number = 8,
+    life: number = 0.35,
+  ): void {
+    for (let i = 0; i < count; i++) {
+      const spark = MeshBuilder.CreateSphere(
+        `spark_${Date.now()}_${i}`,
+        { diameter: 0.1, segments: 4 },
+        this.scene,
+      );
+      const mat = new StandardMaterial('sparkMat', this.scene);
+      mat.emissiveColor = color;
+      mat.diffuseColor = color;
+      spark.material = mat;
+      spark.position.copyFrom(position);
+
+      const theta = Math.random() * Math.PI * 2;
+      const phi = (Math.random() - 0.5) * Math.PI;
+      const speed = 2.5 + Math.random() * 3.5;
+      const velocity = new Vector3(
+        Math.cos(theta) * Math.cos(phi) * speed,
+        Math.sin(phi) * speed + 2,
+        Math.sin(theta) * Math.cos(phi) * speed,
+      );
+      this.sparkBursts.push({ mesh: spark, velocity, life, maxLife: life });
+    }
+  }
+
+  private updateSparkBursts(deltaSeconds: number): void {
+    for (let i = this.sparkBursts.length - 1; i >= 0; i--) {
+      const s = this.sparkBursts[i];
+      s.life -= deltaSeconds;
+      s.velocity.y -= 9.8 * deltaSeconds;
+      s.mesh.position.addInPlace(s.velocity.scale(deltaSeconds));
+      const scale = Math.max(0.01, s.life / s.maxLife);
+      s.mesh.scaling.setAll(scale);
+      if (s.life <= 0) {
+        s.mesh.dispose();
+        this.sparkBursts.splice(i, 1);
       }
     }
   }
