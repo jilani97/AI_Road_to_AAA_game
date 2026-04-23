@@ -46,12 +46,17 @@ appRoot.innerHTML = `
         <h2>Objective</h2>
         <p id="objective">Plant the tracker on the Baron's cane. Reach the Liquid Time sample.</p>
       </div>
+      <div class="card">
+        <h2>Health</h2>
+        <div id="hp-pips" class="hp-pips"></div>
+      </div>
       <div class="card sonar-card">
         <h2>Sonic Crest</h2>
         <p id="sonar-status">Scanning&hellip;</p>
       </div>
     </aside>
   </div>
+  <div id="damage-vignette" class="damage-vignette"></div>
   <div id="pause-menu" class="overlay hidden">
     <div class="menu-box">
       <h2>Paused</h2>
@@ -66,6 +71,10 @@ appRoot.innerHTML = `
             <label><input type="radio" name="difficulty" value="medium"> Medium</label>
             <label><input type="radio" name="difficulty" value="hard"> Hard</label>
           </div>
+        </div>
+        <div class="setting-group">
+          <span class="setting-label">Accessibility</span>
+          <label class="setting-toggle"><input type="checkbox" id="chk-reduce-motion"> Reduce camera motion</label>
         </div>
         <h3>Graphic Settings</h3>
         <div class="setting-group">
@@ -110,9 +119,52 @@ const weaponElement = document.querySelector<HTMLParagraphElement>('#weapon-stat
 const pauseMenu = document.querySelector<HTMLDivElement>('#pause-menu');
 const btnResume = document.querySelector<HTMLButtonElement>('#btn-resume');
 const btnRestart = document.querySelector<HTMLButtonElement>('#btn-restart');
+const hpPipsElement = document.querySelector<HTMLDivElement>('#hp-pips');
+const damageVignette = document.querySelector<HTMLDivElement>('#damage-vignette');
+const shellElement = document.querySelector<HTMLDivElement>('.shell');
 
-if (!canvas || !statusElement || !objectiveElement || !sonarElement || !weaponElement || !pauseMenu || !btnResume || !btnRestart) {
+if (
+  !canvas ||
+  !statusElement ||
+  !objectiveElement ||
+  !sonarElement ||
+  !weaponElement ||
+  !pauseMenu ||
+  !btnResume ||
+  !btnRestart ||
+  !hpPipsElement ||
+  !damageVignette ||
+  !shellElement
+) {
   throw new Error('Game UI elements not found');
+}
+
+function renderHpPips(current: number, max: number): void {
+  const doubled = Math.round(current * 2);
+  const fragments: string[] = [];
+  for (let i = 0; i < max; i++) {
+    const filledHalves = Math.max(0, Math.min(2, doubled - i * 2));
+    const cls = filledHalves === 2 ? 'hp-pip full' : filledHalves === 1 ? 'hp-pip half' : 'hp-pip empty';
+    fragments.push(`<span class="${cls}" aria-hidden="true"></span>`);
+  }
+  hpPipsElement!.innerHTML = fragments.join('');
+  hpPipsElement!.setAttribute('aria-label', `Health: ${current} of ${max}`);
+}
+
+let damageFlashTimer: number | undefined;
+function flashDamage(): void {
+  damageVignette!.classList.remove('pulse');
+  // Force reflow so re-adding the class restarts the animation.
+  void damageVignette!.offsetWidth;
+  damageVignette!.classList.add('pulse');
+  shellElement!.classList.remove('camera-shake');
+  void shellElement!.offsetWidth;
+  shellElement!.classList.add('camera-shake');
+  if (damageFlashTimer !== undefined) window.clearTimeout(damageFlashTimer);
+  damageFlashTimer = window.setTimeout(() => {
+    damageVignette!.classList.remove('pulse');
+    shellElement!.classList.remove('camera-shake');
+  }, 420);
 }
 
 const game = new GameApp({
@@ -136,7 +188,9 @@ const game = new GameApp({
     } else {
       pauseMenu.classList.add('hidden');
     }
-  }
+  },
+  onHealthChange: renderHpPips,
+  onDamaged: flashDamage,
 });
 
 btnResume.addEventListener('click', () => {
@@ -166,6 +220,7 @@ const cameraMinInputs = Array.from(
 const difficultyInputs = Array.from(
   document.querySelectorAll<HTMLInputElement>('input[name="difficulty"]'),
 );
+const reduceMotionInput = document.querySelector<HTMLInputElement>('#chk-reduce-motion');
 
 let settings: GameSettings = loadSettings();
 hydrateDifficulty();
@@ -173,6 +228,7 @@ hydrateDifficulty();
 function applySettings(): void {
   game.applyGraphicsSettings(settings);
   game.applyCameraSettings(settings.camera);
+  game.setReduceMotion(settings.reduceMotion);
 }
 
 function hydrateGraphicsControls(current: GameSettings): void {
@@ -192,6 +248,7 @@ function hydrateGraphicsControls(current: GameSettings): void {
   for (const input of difficultyInputs) {
     input.checked = input.value === current.difficulty;
   }
+  if (reduceMotionInput) reduceMotionInput.checked = current.reduceMotion;
 }
 
 hydrateGraphicsControls(settings);
@@ -251,6 +308,14 @@ for (const input of difficultyInputs) {
     const next = input.value as Difficulty;
     settings = { ...settings, difficulty: next };
     setDifficulty(next);
+  });
+}
+
+if (reduceMotionInput) {
+  reduceMotionInput.addEventListener('change', () => {
+    settings = { ...settings, reduceMotion: reduceMotionInput.checked };
+    saveSettings(settings);
+    applySettings();
   });
 }
 

@@ -58,6 +58,10 @@ interface GameAppOptions {
   onSonarChange: (message: string) => void;
   onWeaponChange?: (weapon: string) => void;
   onPauseToggle?: (isPaused: boolean) => void;
+  /** Called when HP changes so the HUD can re-render pips. */
+  onHealthChange?: (current: number, max: number) => void;
+  /** Called for each damage event — HUD can flash a vignette and shake the canvas. */
+  onDamaged?: () => void;
 }
 
 interface InputState {
@@ -104,6 +108,20 @@ const SWORD_RANGE = 3.0;
 const PLAYER_EYE_HEIGHT = 1.0;
 /** Base hearing radius for a guard — difficulty-scaled hearing is Task 4c. */
 const GUARD_HEARING_RADIUS = 10;
+/** Base guard melee damage per difficulty (Easy flat 1 / Med 1 / Hard 2, per plan Task 5). */
+const GUARD_MELEE_DAMAGE: Record<Difficulty, number> = {
+  easy: 1,
+  medium: 1,
+  hard: 2,
+};
+/** Base i-frame window per difficulty. Character modifier stacks on top. */
+const IFRAME_BASE_SECONDS: Record<Difficulty, number> = {
+  easy: 1.0,
+  medium: 0.6,
+  hard: 0.3,
+};
+/** Revive token skill id — if active and unused, grants one resurrection on 0 HP (Medium only). */
+const REVIVE_TOKEN_SKILL_ID = 'gadgets.revive_token';
 /** Per-action base noise radii (hearing targets compare against this). */
 const NOISE_RADIUS_DASH = 6;
 const NOISE_RADIUS_LANDING = 7;
@@ -202,6 +220,12 @@ export class GameApp {
   private lastKnownPlayerPosition: Vector3 | null = null;
   private pendingNoise: { origin: Vector3; radius: number } | null = null;
   private wasAirborne: boolean = false;
+  private hp: number = getCharacter(DEFAULT_CHARACTER).stats.hp;
+  private iFramesRemaining: number = 0;
+  private reviveTokenUsed: boolean = false;
+  /** Skills active for the current run (character starting skills + any unlocked via skill tree). */
+  private activeRunSkills: readonly string[] = [];
+  private reduceMotion: boolean = false;
 
   constructor(options: GameAppOptions) {
     this.options = options;
@@ -286,10 +310,12 @@ export class GameApp {
     ];
 
     hydrateCurrency();
+    this.activeRunSkills = this.character.startingSkills.slice();
     this.registerInput();
     this.updateStatus('Act I \u2014 The Rainy Rooftops. Slip past the Baron\'s guards.', 'neutral');
     this.options.onObjectiveChange('Plant the tracker on the Baron\'s cane. Reach the Liquid Time sample.');
     this.options.onSonarChange('Scanning\u2026');
+    this.options.onHealthChange?.(this.hp, this.character.stats.hp);
   }
 
   public start(): void {
@@ -399,10 +425,73 @@ export class GameApp {
 
   public setCharacter(id: CharacterId): void {
     this.character = getCharacter(id);
+    this.activeRunSkills = this.character.startingSkills.slice();
+    this.hp = this.character.stats.hp;
+    this.iFramesRemaining = 0;
+    this.reviveTokenUsed = false;
+    this.options.onHealthChange?.(this.hp, this.character.stats.hp);
   }
 
   public getCharacter(): CharacterProfile {
     return this.character;
+  }
+
+  public setReduceMotion(value: boolean): void {
+    this.reduceMotion = value;
+  }
+
+  public getHealth(): { current: number; max: number } {
+    return { current: this.hp, max: this.character.stats.hp };
+  }
+
+  private iFrameDuration(): number {
+    return Math.max(
+      0.1,
+      IFRAME_BASE_SECONDS[getDifficulty()] + this.character.stats.iFrameModifierSeconds,
+    );
+  }
+
+  private takeDamage(amount: number): void {
+    if (this.state.hasLost || this.state.hasWon) return;
+    if (this.iFramesRemaining > 0 || amount <= 0) return;
+    this.hp = Math.max(0, this.hp - amount);
+    this.iFramesRemaining = this.iFrameDuration();
+    this.options.onHealthChange?.(this.hp, this.character.stats.hp);
+    if (!this.reduceMotion) {
+      this.options.onDamaged?.();
+    }
+    if (this.hp <= 0) {
+      this.handleZeroHealth();
+    }
+  }
+
+  private handleZeroHealth(): void {
+    const difficulty = getDifficulty();
+    if (difficulty === 'easy') {
+      // Respawn at level start with a fresh HP bar. Vial progress is preserved.
+      this.hp = this.character.stats.hp;
+      this.iFramesRemaining = this.iFrameDuration();
+      this.playerPivot.position.set(-8, 1.2, -8);
+      this.verticalVelocity = 0;
+      this.options.onHealthChange?.(this.hp, this.character.stats.hp);
+      this.updateStatus('Respawned at the starting rooftop.', 'alert');
+      return;
+    }
+    if (
+      difficulty === 'medium' &&
+      !this.reviveTokenUsed &&
+      this.activeRunSkills.includes(REVIVE_TOKEN_SKILL_ID)
+    ) {
+      this.reviveTokenUsed = true;
+      this.hp = 1;
+      this.iFramesRemaining = this.iFrameDuration() * 1.5;
+      this.options.onHealthChange?.(this.hp, this.character.stats.hp);
+      this.updateStatus('Revive token consumed — back on 1 HP!', 'alert');
+      return;
+    }
+    this.state.hasLost = true;
+    this.playGuardAnimationRole('alert');
+    this.updateStatus("Midnight is down. Press R to restart.", 'alert');
   }
 
   public applyCameraSettings(settings: CameraSettings): void {
@@ -1018,6 +1107,9 @@ export class GameApp {
     this.updateSparkBursts(deltaSeconds);
     this.updateSonar();
     this.updateCameraFade();
+    if (this.iFramesRemaining > 0) {
+      this.iFramesRemaining = Math.max(0, this.iFramesRemaining - deltaSeconds);
+    }
     this.updateCamera();
     this.evaluateGameState();
   }
@@ -1732,6 +1824,16 @@ export class GameApp {
       this.guardPivot.position.x += (dx / distance) * overlap;
       this.guardPivot.position.z += (dz / distance) * overlap;
     }
+
+    // Melee hit: an aggressive guard within catch distance deals damage on each
+    // i-frame window. Suspicious/investigating guards do not swing.
+    if (
+      (this.guardAi.state === 'alerted' || this.guardAi.state === 'chasing') &&
+      distance <= GUARD_CATCH_DISTANCE &&
+      this.iFramesRemaining <= 0
+    ) {
+      this.takeDamage(GUARD_MELEE_DAMAGE[getDifficulty()]);
+    }
   }
 
   private announceGuardStateTransition(previous: GuardState, next: GuardState): void {
@@ -1822,21 +1924,10 @@ export class GameApp {
       return;
     }
 
+    // (The "guard touches player" loss condition now lives in Task 5's HP pipeline:
+    // damage ticks inside updateGuard, and `hasLost` trips only when HP hits 0 with no
+    // revive option available.)
     const playerPosition = this.playerPivot.position;
-
-    if (this.guardAi.state === 'chasing') {
-      const dx = this.guardPivot.position.x - playerPosition.x;
-      const dz = this.guardPivot.position.z - playerPosition.z;
-      if (Math.hypot(dx, dz) <= GUARD_CATCH_DISTANCE) {
-        this.state.hasLost = true;
-        this.playGuardAnimationRole('alert');
-        this.updateStatus("Baron's guard caught Midnight! Press R to restart.", 'alert');
-        this.options.onObjectiveChange(
-          "Tip: break line of sight, then keep moving \u2014 stay above the guard's sightline.",
-        );
-        return;
-      }
-    }
 
     if (
       !this.state.liquidTimeSecured &&
@@ -1917,6 +2008,11 @@ export class GameApp {
     this.state.liquidTimeSecured = false;
     this.guardKnockdown = null;
     this.guardKnockoutCount = 0;
+    this.hp = this.character.stats.hp;
+    this.iFramesRemaining = 0;
+    this.reviveTokenUsed = false;
+    this.activeRunSkills = this.character.startingSkills.slice();
+    this.options.onHealthChange?.(this.hp, this.character.stats.hp);
     this.verticalVelocity = 0;
     this.canDoubleJump = false;
     this.wasAirborne = false;

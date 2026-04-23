@@ -3,6 +3,7 @@ import {
   DEFAULT_CAMERA,
   DEFAULT_DIFFICULTY,
   DEFAULT_POSTFX,
+  DEFAULT_REDUCE_MOTION,
   SETTINGS_STORAGE_KEY,
   loadSettings,
   resolveGpuTier,
@@ -84,6 +85,7 @@ describe('loadSettings / saveSettings', () => {
     expect(settings.postfx).toEqual(DEFAULT_POSTFX);
     expect(settings.camera).toEqual(DEFAULT_CAMERA);
     expect(settings.difficulty).toBe(DEFAULT_DIFFICULTY);
+    expect(settings.reduceMotion).toBe(DEFAULT_REDUCE_MOTION);
   });
 
   it('round-trips saved settings through localStorage', () => {
@@ -92,6 +94,7 @@ describe('loadSettings / saveSettings', () => {
       postfx: { bloom: false, fxaa: true, chromaticAberration: false },
       camera: { mode: 'fade', minDistance: 2 },
       difficulty: 'hard',
+      reduceMotion: true,
     };
     saveSettings(saved);
     expect(loadSettings({})).toEqual(saved);
@@ -106,7 +109,7 @@ describe('loadSettings / saveSettings', () => {
     expect(settings.difficulty).toBe(DEFAULT_DIFFICULTY);
   });
 
-  it('backfills default camera and difficulty when a stored payload predates those blocks', () => {
+  it('backfills default camera, difficulty, and reduceMotion when a stored payload predates those blocks', () => {
     localStorage.setItem(
       SETTINGS_STORAGE_KEY,
       JSON.stringify({
@@ -117,6 +120,7 @@ describe('loadSettings / saveSettings', () => {
     const settings = loadSettings({});
     expect(settings.camera).toEqual(DEFAULT_CAMERA);
     expect(settings.difficulty).toBe(DEFAULT_DIFFICULTY);
+    expect(settings.reduceMotion).toBe(DEFAULT_REDUCE_MOTION);
   });
 
   it('survives a localStorage that throws on access', () => {
@@ -135,6 +139,7 @@ describe('loadSettings / saveSettings', () => {
         postfx: DEFAULT_POSTFX,
         camera: DEFAULT_CAMERA,
         difficulty: DEFAULT_DIFFICULTY,
+        reduceMotion: DEFAULT_REDUCE_MOTION,
       }),
     ).not.toThrow();
     expect(loadSettings({}).shadowTier).toBe('med');

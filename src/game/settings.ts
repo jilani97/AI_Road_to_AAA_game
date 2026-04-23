@@ -21,6 +21,8 @@ export interface GameSettings {
   postfx: PostFxSettings;
   camera: CameraSettings;
   difficulty: Difficulty;
+  /** Accessibility: when true, suppress damage vignette flashes and camera shake. */
+  reduceMotion: boolean;
 }
 
 export interface GpuCapabilities {
@@ -46,6 +48,8 @@ export const DEFAULT_CAMERA: CameraSettings = {
 };
 
 export const DEFAULT_DIFFICULTY: Difficulty = 'medium';
+
+export const DEFAULT_REDUCE_MOTION = false;
 
 export const SHADOW_MAP_SIZE: Record<ShadowTier, number> = {
   low: 1024,
@@ -144,6 +148,7 @@ function parseSettings(raw: string): GameSettings | null {
       },
       camera: parseCamera(data.camera),
       difficulty: isDifficulty(data.difficulty) ? data.difficulty : DEFAULT_DIFFICULTY,
+      reduceMotion: typeof data.reduceMotion === 'boolean' ? data.reduceMotion : DEFAULT_REDUCE_MOTION,
     };
   } catch {
     return null;
@@ -163,6 +168,7 @@ export function loadSettings(caps: GpuCapabilities = getBrowserGpuCapabilities()
     postfx: { ...DEFAULT_POSTFX },
     camera: { ...DEFAULT_CAMERA },
     difficulty: DEFAULT_DIFFICULTY,
+    reduceMotion: DEFAULT_REDUCE_MOTION,
   };
 }
 
