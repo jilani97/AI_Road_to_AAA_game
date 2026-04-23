@@ -30,6 +30,12 @@ import {
   segmentHitsAabb,
   type Aabb,
 } from './collision';
+import {
+  DEFAULT_CHARACTER,
+  getCharacter,
+  type CharacterId,
+  type CharacterProfile,
+} from './characters';
 
 export type StatusTone = 'neutral' | 'alert' | 'success';
 type GuardAnimationRole = 'idle' | 'patrol' | 'alert' | 'hit' | 'defeated';
@@ -162,6 +168,7 @@ export class GameApp {
   private currentShadowTier: GameSettings['shadowTier'] | null = null;
   private cameraMode: CameraSettings['mode'] = 'orbit';
   private readonly fadedMeshes: Set<AbstractMesh> = new Set();
+  private character: CharacterProfile = getCharacter(DEFAULT_CHARACTER);
 
   constructor(options: GameAppOptions) {
     this.options = options;
@@ -353,6 +360,14 @@ export class GameApp {
     this.pipeline.bloomEnabled = settings.postfx.bloom;
     this.pipeline.fxaaEnabled = settings.postfx.fxaa;
     this.pipeline.chromaticAberrationEnabled = settings.postfx.chromaticAberration;
+  }
+
+  public setCharacter(id: CharacterId): void {
+    this.character = getCharacter(id);
+  }
+
+  public getCharacter(): CharacterProfile {
+    return this.character;
   }
 
   public applyCameraSettings(settings: CameraSettings): void {
@@ -861,10 +876,11 @@ export class GameApp {
           // Ascension Dash — diagonal burst using micro-thrusters and wings
           if (!this.state.hasLost && !this.state.hasWon) {
             if (this.isOnGround()) {
-              this.verticalVelocity = ASCENSION_DASH_IMPULSE;
+              this.verticalVelocity = ASCENSION_DASH_IMPULSE * this.character.stats.jumpMultiplier;
               this.canDoubleJump = true;
             } else if (this.canDoubleJump) {
-              this.verticalVelocity = ASCENSION_DASH_IMPULSE * 0.85; // slightly weaker second jump
+              this.verticalVelocity =
+                ASCENSION_DASH_IMPULSE * this.character.stats.jumpMultiplier * 0.85; // slightly weaker second jump
               this.canDoubleJump = false;
             }
           }
@@ -1329,7 +1345,10 @@ export class GameApp {
         .add(cameraRight.scale(rawDirection.x));
       moveDirection.normalize();
 
-      const speed = PLAYER_SPEED * (this.inputState.sprint ? SPRINT_MULTIPLIER : 1);
+      const speed =
+        PLAYER_SPEED *
+        this.character.stats.speedMultiplier *
+        (this.inputState.sprint ? SPRINT_MULTIPLIER : 1);
       
       let tryX = this.playerPivot.position.x + moveDirection.x * speed * deltaSeconds;
       let tryZ = this.playerPivot.position.z + moveDirection.z * speed * deltaSeconds;
@@ -1481,8 +1500,9 @@ export class GameApp {
     const matLeft = this.crestPartLeft.material as StandardMaterial;
     const matRight = this.crestPartRight.material as StandardMaterial;
 
-    if (dist < SONAR_RANGE) {
-      const t = 1 - dist / SONAR_RANGE;
+    const sonarRange = SONAR_RANGE * this.character.stats.sonarRangeMultiplier;
+    if (dist < sonarRange) {
+      const t = 1 - dist / sonarRange;
       // Crest snaps open in surprise/focus
       this.crestPartLeft.rotation.z = -Math.PI / 4;
       this.crestPartRight.rotation.z = Math.PI / 4;
