@@ -44,6 +44,8 @@ import {
   type GuardState,
 } from './guardAi';
 import { getDifficulty } from './difficulty';
+import { earn, hydrateCurrency, spend } from './currency';
+import type { Difficulty } from './settings';
 
 export type StatusTone = 'neutral' | 'alert' | 'success';
 type GuardAnimationRole = 'idle' | 'patrol' | 'alert' | 'hit' | 'defeated';
@@ -85,7 +87,14 @@ const ASCENSION_DASH_IMPULSE = 9;
 const GRAVITY = 22;
 /** Distance within which the sonic-crestal sonar registers guard footsteps. */
 const SONAR_RANGE = 13;
-const GUARD_HIT_RECOVERY_SECONDS = 0.45;
+/** How long a knocked-out guard stays down before waking. Easy = never. */
+const GUARD_KNOCKOUT_WAKE_SECONDS: Record<Difficulty, number> = {
+  easy: Infinity,
+  medium: 30,
+  hard: 12,
+};
+/** Base coin drop on the first knockout. Scaling follows `knockoutDropAmount`. */
+const KNOCKOUT_BASE_DROP = 25;
 const DEFAULT_WEAPON_SOCKET_POSITION = new Vector3(0.5, 0.9, 0.4);
 const PROJECTILE_HIT_FADE_SECONDS = 0.15;
 const BAZOOKA_WEAPON_INDEX = 3;
@@ -178,7 +187,9 @@ export class GameApp {
   private readonly guardAnimations: Map<string, AnimationGroup> = new Map();
   private readonly guardAnimationBindings: Partial<Record<GuardAnimationRole, string>> = {};
   private currentGuardAnimation = '';
-  private guardHitRecovery = 0;
+  /** Non-null while the guard is knocked out. `remainingSeconds === Infinity` on Easy (permanent). */
+  private guardKnockdown: { remainingSeconds: number; pendingRescind: number } | null = null;
+  private guardKnockoutCount: number = 0;
 
   private sun!: DirectionalLight;
   private shadowGenerator: ShadowGenerator | null = null;
@@ -274,6 +285,7 @@ export class GameApp {
       new Vector3(0, 0.75, -14),
     ];
 
+    hydrateCurrency();
     this.registerInput();
     this.updateStatus('Act I \u2014 The Rainy Rooftops. Slip past the Baron\'s guards.', 'neutral');
     this.options.onObjectiveChange('Plant the tracker on the Baron\'s cane. Reach the Liquid Time sample.');
@@ -1325,9 +1337,67 @@ export class GameApp {
     }
   }
 
+  /** Called by melee / projectiles / bazooka AoE when they land on the guard.
+   *  A successful strike is a clean takedown — wake timing scales with difficulty.
+   *  No-ops while the guard is already knocked out. */
   private triggerGuardHitReaction(): void {
-    this.guardHitRecovery = GUARD_HIT_RECOVERY_SECONDS;
-    this.playGuardAnimationRole('hit');
+    if (this.guardKnockdown !== null) return;
+
+    this.guardKnockoutCount += 1;
+    const difficulty = getDifficulty();
+    const wake = GUARD_KNOCKOUT_WAKE_SECONDS[difficulty];
+    const drop = this.knockoutDropAmount(this.guardKnockoutCount, difficulty);
+
+    let pendingRescind = 0;
+    if (drop > 0) {
+      earn(drop, 'knockout');
+      if (difficulty === 'hard') pendingRescind = drop;
+    }
+
+    this.guardKnockdown = { remainingSeconds: wake, pendingRescind };
+    this.playGuardAnimationRole('defeated');
+    this.pendingNoise = null;
+
+    const permanent = wake === Infinity;
+    this.updateStatus(
+      drop > 0
+        ? `Takedown! +${drop} ⬢${permanent ? '' : ` (wakes in ${Math.round(wake)} s)`}`
+        : `Takedown!${permanent ? '' : ` (wakes in ${Math.round(wake)} s)`}`,
+      'success',
+    );
+  }
+
+  private knockoutDropAmount(count: number, difficulty: Difficulty): number {
+    switch (difficulty) {
+      case 'easy':
+        return KNOCKOUT_BASE_DROP;
+      case 'medium':
+        return count === 1 ? KNOCKOUT_BASE_DROP : 0;
+      case 'hard':
+        return Math.floor(KNOCKOUT_BASE_DROP * Math.pow(0.5, count - 1));
+    }
+  }
+
+  private wakeGuardFromKnockdown(): void {
+    if (!this.guardKnockdown) return;
+    const difficulty = getDifficulty();
+    const pendingRescind = this.guardKnockdown.pendingRescind;
+    this.guardKnockdown = null;
+
+    // Plan Task 4d: a waking guard returns to Suspicious rather than Patrol.
+    this.guardAi = initialGuardAiState('suspicious');
+    this.applyConeColourForState(this.guardAi.state);
+
+    if (difficulty === 'hard') {
+      if (pendingRescind > 0) spend(pendingRescind);
+      // Actual reinforcement spawns land in Task 6 (multi-guard infrastructure).
+      this.updateStatus(
+        'Guard woke and radioed for reinforcements!',
+        'alert',
+      );
+    } else {
+      this.updateStatus('Guard is back on their feet.', 'alert');
+    }
   }
 
   private setPlayerAnimation(name: string): void {
@@ -1572,11 +1642,16 @@ export class GameApp {
       return;
     }
 
-    if (this.guardHitRecovery > 0) {
-      this.guardHitRecovery = Math.max(0, this.guardHitRecovery - deltaSeconds);
-      this.playGuardAnimationRole('hit');
-      // Still consume any pending noise so the guard doesn't hear it later when it fires.
+    if (this.guardKnockdown !== null) {
+      // Knocked-out guards don't tick AI, don't move, and don't hear anything.
       this.pendingNoise = null;
+      this.playGuardAnimationRole('defeated');
+      if (Number.isFinite(this.guardKnockdown.remainingSeconds)) {
+        this.guardKnockdown.remainingSeconds -= deltaSeconds;
+        if (this.guardKnockdown.remainingSeconds <= 0) {
+          this.wakeGuardFromKnockdown();
+        }
+      }
       return;
     }
 
@@ -1840,7 +1915,8 @@ export class GameApp {
     this.state.hasLost = false;
     this.state.hasWon = false;
     this.state.liquidTimeSecured = false;
-    this.guardHitRecovery = 0;
+    this.guardKnockdown = null;
+    this.guardKnockoutCount = 0;
     this.verticalVelocity = 0;
     this.canDoubleJump = false;
     this.wasAirborne = false;
