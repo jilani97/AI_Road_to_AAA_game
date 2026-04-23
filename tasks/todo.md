@@ -20,10 +20,11 @@ Ordered checklist. Full spec in [plan.md](./plan.md). Decision rationale in [dec
 ## Phase 2 — Guard AI, Progression, Characters
 
 - [ ] **13.** Difficulty config + skill tree + character roster (foundational — blocks everything else in Phase 2+)
-  - [ ] 13a: `difficulty.ts` central config (Easy / Medium / Hard, default Medium)
-  - [ ] 13b: 3 characters — Midnight / Ironclaw / Kestrel — with unique starting skills and stat blocks; character-select screen
-  - [ ] 13c: Skill tree — 4 branches (Mobility / Senses / Silence / Gadgets), prerequisite structure, free respec, Hard-mode 4-skill active cap
-  - [ ] 13d: Currency system — pickups + end-of-run bonus + guard drops, persisted to localStorage
+  - [x] 13a: `difficulty.ts` central config (Easy / Medium / Hard, default Medium) — settings-backed, pause-menu segmented control, `getDifficulty()` / `setDifficulty()` / `scaledByDifficulty()` API for subsystems.
+  - [x] 13b: `characters.ts` roster data (Midnight / Ironclaw / Kestrel) — HP, speed/jump/sonar/damage multipliers, footstep noise, i-frame modifier, starting skills. **Character-select UI still pending** (data layer only).
+  - [x] 13c: `skills.ts` — 4 branches (Mobility / Senses / Silence / Gadgets) × (tier-1 anchor + 2 tier-2 children), prerequisite validation, `unlockSkill` / `canUnlock` / `refundAllSkills`, Hard-mode 4-skill active cap with `canAddActive` / `addActive` / `removeActive`. **Skill-tree UI still pending**.
+  - [x] 13d: `currency.ts` — single balance (storage key `neonTail.currency.v1`), `earn(amount, source)` / `spend(amount)` / `hydrateCurrency()`, safe-storage + clamping. **HUD + in-game pickup hooks still pending**.
+  - [ ] 13-UI: Character-select screen, skill-tree screen, currency HUD, pickup + end-of-run earning hooks. (Deferred to a follow-up slice — depends on none of the Phase 2 gameplay tasks.)
 - [ ] **4.** Guard AI state machine (Patrol → Suspicious → Investigating → Alerted → Chasing → Returning) with all per-difficulty scaling: detection timings, hearing radii, give-up timer, guard comms, investigating behaviour, knockout persistence, currency interaction, state indicators (icon + cone colour)
 - [ ] **5.** Player HP system (per-character base HP, difficulty-scaled regen/consumables, 0-HP handling, damage sources, damage amounts, i-frames with character modifier, red vignette, reduce-motion toggle)
 - [ ] **6.** Multiple guards (count scales with difficulty + reinforcements via rooftop hatches, zone-based patrols with semi-random wandering, global alarm state with decay: Normal → Caution → Alert → Evasion)

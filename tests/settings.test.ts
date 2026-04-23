@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   DEFAULT_CAMERA,
+  DEFAULT_DIFFICULTY,
   DEFAULT_POSTFX,
   SETTINGS_STORAGE_KEY,
   loadSettings,
@@ -82,6 +83,7 @@ describe('loadSettings / saveSettings', () => {
     expect(settings.shadowTier).toBe('high');
     expect(settings.postfx).toEqual(DEFAULT_POSTFX);
     expect(settings.camera).toEqual(DEFAULT_CAMERA);
+    expect(settings.difficulty).toBe(DEFAULT_DIFFICULTY);
   });
 
   it('round-trips saved settings through localStorage', () => {
@@ -89,6 +91,7 @@ describe('loadSettings / saveSettings', () => {
       shadowTier: 'low',
       postfx: { bloom: false, fxaa: true, chromaticAberration: false },
       camera: { mode: 'fade', minDistance: 2 },
+      difficulty: 'hard',
     };
     saveSettings(saved);
     expect(loadSettings({})).toEqual(saved);
@@ -100,9 +103,10 @@ describe('loadSettings / saveSettings', () => {
     expect(settings.shadowTier).toBe('low');
     expect(settings.postfx).toEqual(DEFAULT_POSTFX);
     expect(settings.camera).toEqual(DEFAULT_CAMERA);
+    expect(settings.difficulty).toBe(DEFAULT_DIFFICULTY);
   });
 
-  it('backfills default camera settings when a stored payload predates the camera block', () => {
+  it('backfills default camera and difficulty when a stored payload predates those blocks', () => {
     localStorage.setItem(
       SETTINGS_STORAGE_KEY,
       JSON.stringify({
@@ -110,7 +114,9 @@ describe('loadSettings / saveSettings', () => {
         postfx: { bloom: true, fxaa: true, chromaticAberration: true },
       }),
     );
-    expect(loadSettings({}).camera).toEqual(DEFAULT_CAMERA);
+    const settings = loadSettings({});
+    expect(settings.camera).toEqual(DEFAULT_CAMERA);
+    expect(settings.difficulty).toBe(DEFAULT_DIFFICULTY);
   });
 
   it('survives a localStorage that throws on access', () => {
@@ -128,6 +134,7 @@ describe('loadSettings / saveSettings', () => {
         shadowTier: 'med',
         postfx: DEFAULT_POSTFX,
         camera: DEFAULT_CAMERA,
+        difficulty: DEFAULT_DIFFICULTY,
       }),
     ).not.toThrow();
     expect(loadSettings({}).shadowTier).toBe('med');

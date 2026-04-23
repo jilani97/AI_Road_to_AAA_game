@@ -1,10 +1,12 @@
 import './style.css';
 import { GameApp } from './game/GameApp';
+import { hydrateDifficulty, setDifficulty } from './game/difficulty';
 import {
   loadSettings,
   saveSettings,
   type CameraMinDistance,
   type CameraMode,
+  type Difficulty,
   type GameSettings,
   type PostFxSettings,
   type ShadowTier,
@@ -56,6 +58,15 @@ appRoot.innerHTML = `
       <button id="btn-resume">Resume</button>
       <button id="btn-restart">Restart Level</button>
       <div class="settings">
+        <h3>Gameplay</h3>
+        <div class="setting-group">
+          <span class="setting-label">Difficulty</span>
+          <div class="segmented" role="radiogroup" aria-label="Difficulty">
+            <label><input type="radio" name="difficulty" value="easy"> Easy</label>
+            <label><input type="radio" name="difficulty" value="medium"> Medium</label>
+            <label><input type="radio" name="difficulty" value="hard"> Hard</label>
+          </div>
+        </div>
         <h3>Graphic Settings</h3>
         <div class="setting-group">
           <span class="setting-label">Shadows</span>
@@ -152,8 +163,12 @@ const cameraModeInputs = Array.from(
 const cameraMinInputs = Array.from(
   document.querySelectorAll<HTMLInputElement>('input[name="camera-min"]'),
 );
+const difficultyInputs = Array.from(
+  document.querySelectorAll<HTMLInputElement>('input[name="difficulty"]'),
+);
 
 let settings: GameSettings = loadSettings();
+hydrateDifficulty();
 
 function applySettings(): void {
   game.applyGraphicsSettings(settings);
@@ -173,6 +188,9 @@ function hydrateGraphicsControls(current: GameSettings): void {
   }
   for (const input of cameraMinInputs) {
     input.checked = Number(input.value) === current.camera.minDistance;
+  }
+  for (const input of difficultyInputs) {
+    input.checked = input.value === current.difficulty;
   }
 }
 
@@ -224,6 +242,15 @@ for (const input of cameraMinInputs) {
     };
     saveSettings(settings);
     applySettings();
+  });
+}
+
+for (const input of difficultyInputs) {
+  input.addEventListener('change', () => {
+    if (!input.checked) return;
+    const next = input.value as Difficulty;
+    settings = { ...settings, difficulty: next };
+    setDifficulty(next);
   });
 }
 

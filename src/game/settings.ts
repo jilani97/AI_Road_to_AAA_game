@@ -14,10 +14,13 @@ export interface CameraSettings {
   minDistance: CameraMinDistance;
 }
 
+export type Difficulty = 'easy' | 'medium' | 'hard';
+
 export interface GameSettings {
   shadowTier: ShadowTier;
   postfx: PostFxSettings;
   camera: CameraSettings;
+  difficulty: Difficulty;
 }
 
 export interface GpuCapabilities {
@@ -41,6 +44,8 @@ export const DEFAULT_CAMERA: CameraSettings = {
   mode: 'orbit',
   minDistance: 4,
 };
+
+export const DEFAULT_DIFFICULTY: Difficulty = 'medium';
 
 export const SHADOW_MAP_SIZE: Record<ShadowTier, number> = {
   low: 1024,
@@ -109,6 +114,10 @@ function isCameraMinDistance(value: unknown): value is CameraMinDistance {
   return value === 2 || value === 4 || value === 8;
 }
 
+export function isDifficulty(value: unknown): value is Difficulty {
+  return value === 'easy' || value === 'medium' || value === 'hard';
+}
+
 function parseCamera(raw: unknown): CameraSettings {
   if (!raw || typeof raw !== 'object') return { ...DEFAULT_CAMERA };
   const data = raw as Partial<CameraSettings>;
@@ -134,6 +143,7 @@ function parseSettings(raw: string): GameSettings | null {
         chromaticAberration: data.postfx.chromaticAberration !== false,
       },
       camera: parseCamera(data.camera),
+      difficulty: isDifficulty(data.difficulty) ? data.difficulty : DEFAULT_DIFFICULTY,
     };
   } catch {
     return null;
@@ -152,6 +162,7 @@ export function loadSettings(caps: GpuCapabilities = getBrowserGpuCapabilities()
     shadowTier: resolveGpuTier(caps),
     postfx: { ...DEFAULT_POSTFX },
     camera: { ...DEFAULT_CAMERA },
+    difficulty: DEFAULT_DIFFICULTY,
   };
 }
 
