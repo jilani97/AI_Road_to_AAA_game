@@ -36,6 +36,14 @@ import {
   type CharacterId,
   type CharacterProfile,
 } from './characters';
+import {
+  guardStateIcon,
+  initialGuardAiState,
+  tickGuardAi,
+  type GuardAiState,
+  type GuardState,
+} from './guardAi';
+import { getDifficulty } from './difficulty';
 
 export type StatusTone = 'neutral' | 'alert' | 'success';
 type GuardAnimationRole = 'idle' | 'patrol' | 'alert' | 'hit' | 'defeated';
@@ -85,6 +93,16 @@ const BAZOOKA_EXPLOSION_RADIUS = 2.5;
 const SWORD_RANGE = 3.0;
 /** Eye height above player pivot used for sword line-of-sight raycasts. */
 const PLAYER_EYE_HEIGHT = 1.0;
+/** Base hearing radius for a guard — difficulty-scaled hearing is Task 4c. */
+const GUARD_HEARING_RADIUS = 10;
+/** Per-action base noise radii (hearing targets compare against this). */
+const NOISE_RADIUS_DASH = 6;
+const NOISE_RADIUS_LANDING = 7;
+const NOISE_RADIUS_ATTACK = 8;
+/** The guard has to physically reach the player to end the run. */
+const GUARD_CATCH_DISTANCE = 1.2;
+/** A fall counts as "loud" only when the vertical velocity on landing exceeds this. */
+const LANDING_NOISE_SPEED_THRESHOLD = 6;
 
 export class GameApp {
   private readonly engine: Engine;
@@ -169,6 +187,10 @@ export class GameApp {
   private cameraMode: CameraSettings['mode'] = 'orbit';
   private readonly fadedMeshes: Set<AbstractMesh> = new Set();
   private character: CharacterProfile = getCharacter(DEFAULT_CHARACTER);
+  private guardAi: GuardAiState = initialGuardAiState();
+  private lastKnownPlayerPosition: Vector3 | null = null;
+  private pendingNoise: { origin: Vector3; radius: number } | null = null;
+  private wasAirborne: boolean = false;
 
   constructor(options: GameAppOptions) {
     this.options = options;
@@ -240,6 +262,7 @@ export class GameApp {
 
     this.visionCone = this.createVisionCone();
     this.visionCone.parent = this.guardPivot;
+    this.applyConeColourForState(this.guardAi.state);
 
     this.liquidTimeVial = this.createLiquidTimeVial();
     this.liquidTimeVial.position = new Vector3(9, 1.2, 8.5);
@@ -878,9 +901,11 @@ export class GameApp {
             if (this.isOnGround()) {
               this.verticalVelocity = ASCENSION_DASH_IMPULSE * this.character.stats.jumpMultiplier;
               this.canDoubleJump = true;
+              this.emitNoise(this.playerPivot.position, NOISE_RADIUS_DASH);
             } else if (this.canDoubleJump) {
               this.verticalVelocity =
                 ASCENSION_DASH_IMPULSE * this.character.stats.jumpMultiplier * 0.85; // slightly weaker second jump
+              this.emitNoise(this.playerPivot.position, NOISE_RADIUS_DASH);
               this.canDoubleJump = false;
             }
           }
@@ -991,6 +1016,7 @@ export class GameApp {
     const weaponIndex = this.state.currentWeapon;
     const playerPos = this.playerPivot.position.clone();
     playerPos.y += 1.0; // Shoot from chest/weapon height
+    this.emitNoise(this.playerPivot.position, NOISE_RADIUS_ATTACK);
 
     // Determine direction player is facing
     const facingDirection = new Vector3(
@@ -1395,11 +1421,16 @@ export class GameApp {
     nextPosition.y = this.playerPivot.position.y + this.verticalVelocity * deltaSeconds;
 
     // Land on terrain when falling OR snap up if clipped through floor while rising
+    const fellFromHeight = this.wasAirborne && -this.verticalVelocity >= LANDING_NOISE_SPEED_THRESHOLD;
     if (nextPosition.y <= terrainY) {
       nextPosition.y = terrainY;
       this.verticalVelocity = 0;
       this.canDoubleJump = true;
+      if (fellFromHeight) {
+        this.emitNoise(this.playerPivot.position, NOISE_RADIUS_LANDING);
+      }
     }
+    this.wasAirborne = nextPosition.y > terrainY + 0.08;
 
     this.playerPivot.position.copyFrom(nextPosition);
 
@@ -1418,6 +1449,118 @@ export class GameApp {
     return Math.abs(this.playerPivot.position.y - terrainY) < 0.08;
   }
 
+  private emitNoise(origin: Vector3, radius: number): void {
+    this.pendingNoise = { origin: origin.clone(), radius };
+  }
+
+  private computePlayerVisible(): boolean {
+    const guardForward = new Vector3(
+      Math.sin(this.guardPivot.rotation.y),
+      0,
+      Math.cos(this.guardPivot.rotation.y),
+    );
+    const heightDiff = this.playerPivot.position.y - this.guardPivot.position.y;
+    const detectionRange = heightDiff > 1.2 ? VISION_RANGE * 0.6 : VISION_RANGE;
+    return isTargetVisible({
+      guardPosition: { x: this.guardPivot.position.x, z: this.guardPivot.position.z },
+      guardForward: { x: guardForward.x, z: guardForward.z },
+      targetPosition: { x: this.playerPivot.position.x, z: this.playerPivot.position.z },
+      maxDistance: detectionRange,
+      fovRadians: VISION_FOV,
+    });
+  }
+
+  private consumePendingNoise(): boolean {
+    if (!this.pendingNoise) return false;
+    const { origin, radius } = this.pendingNoise;
+    this.pendingNoise = null;
+    const dx = this.guardPivot.position.x - origin.x;
+    const dz = this.guardPivot.position.z - origin.z;
+    const planar = Math.hypot(dx, dz);
+    // Hearing is min(guard hearing radius, noise radius) — a loud action still
+    // has to be within earshot, and a quiet action has a short footprint.
+    return planar <= Math.min(GUARD_HEARING_RADIUS, radius);
+  }
+
+  private static readonly CONE_COLOURS: Record<
+    GuardState,
+    { diffuse: Color3; emissive: Color3; alpha: number }
+  > = {
+    patrol: {
+      diffuse: new Color3(0.35, 0.6, 0.75),
+      emissive: new Color3(0.05, 0.1, 0.12),
+      alpha: 0.18,
+    },
+    returning: {
+      diffuse: new Color3(0.35, 0.6, 0.75),
+      emissive: new Color3(0.05, 0.1, 0.12),
+      alpha: 0.18,
+    },
+    suspicious: {
+      diffuse: new Color3(0.95, 0.8, 0.2),
+      emissive: new Color3(0.3, 0.22, 0.02),
+      alpha: 0.25,
+    },
+    investigating: {
+      diffuse: new Color3(0.95, 0.8, 0.2),
+      emissive: new Color3(0.3, 0.22, 0.02),
+      alpha: 0.25,
+    },
+    alerted: {
+      diffuse: new Color3(1.0, 0.55, 0.15),
+      emissive: new Color3(0.4, 0.15, 0.02),
+      alpha: 0.3,
+    },
+    chasing: {
+      diffuse: new Color3(0.95, 0.18, 0.15),
+      emissive: new Color3(0.4, 0.04, 0.04),
+      alpha: 0.32,
+    },
+  };
+
+  private applyConeColourForState(state: GuardState): void {
+    const mat = this.visionCone.material as StandardMaterial | null;
+    if (!mat) return;
+    const palette = GameApp.CONE_COLOURS[state];
+    mat.diffuseColor = palette.diffuse;
+    mat.emissiveColor = palette.emissive;
+    mat.alpha = palette.alpha;
+  }
+
+  /** Walks the guard towards `target` on the XZ plane and returns true when arrived. */
+  private walkGuardToward(target: Vector3, deltaSeconds: number): boolean {
+    const toTarget = target.subtract(this.guardPivot.position);
+    const planarDistance = Math.hypot(toTarget.x, toTarget.z);
+    if (planarDistance < 0.15) return true;
+    const direction = new Vector3(toTarget.x, 0, toTarget.z).normalize();
+    const displacement = direction.scale(GUARD_SPEED * deltaSeconds);
+    this.guardPivot.position.addInPlace(displacement);
+    this.guardPivot.position.y = this.resolveHeight(this.guardPivot.position);
+    this.guardPivot.rotationQuaternion = null;
+    this.guardPivot.rotation.y = Math.atan2(direction.x, direction.z);
+    return false;
+  }
+
+  private faceTarget(target: Vector3): void {
+    const dx = target.x - this.guardPivot.position.x;
+    const dz = target.z - this.guardPivot.position.z;
+    if (Math.hypot(dx, dz) < 1e-4) return;
+    this.guardPivot.rotationQuaternion = null;
+    this.guardPivot.rotation.y = Math.atan2(dx, dz);
+  }
+
+  private distanceToPatrolPath(): number {
+    let best = Infinity;
+    for (const p of this.patrolPoints) {
+      const d = Math.hypot(
+        p.x - this.guardPivot.position.x,
+        p.z - this.guardPivot.position.z,
+      );
+      if (d < best) best = d;
+    }
+    return best;
+  }
+
   private updateGuard(deltaSeconds: number): void {
     if (this.state.hasLost) {
       this.playGuardAnimationRole('alert');
@@ -1432,40 +1575,106 @@ export class GameApp {
     if (this.guardHitRecovery > 0) {
       this.guardHitRecovery = Math.max(0, this.guardHitRecovery - deltaSeconds);
       this.playGuardAnimationRole('hit');
+      // Still consume any pending noise so the guard doesn't hear it later when it fires.
+      this.pendingNoise = null;
       return;
     }
 
-    const target = this.patrolPoints[this.activePatrolIndex];
-    const toTarget = target.subtract(this.guardPivot.position);
-    const planarDistance = Math.hypot(toTarget.x, toTarget.z);
+    const visible = this.computePlayerVisible();
+    const noiseHeard = this.consumePendingNoise();
 
-    if (planarDistance < 0.15) {
-      this.playGuardAnimationRole('idle');
-      this.activePatrolIndex = (this.activePatrolIndex + 1) % this.patrolPoints.length;
-      return;
+    if (visible || noiseHeard) {
+      this.lastKnownPlayerPosition = this.playerPivot.position.clone();
     }
 
-    this.playGuardAnimationRole('patrol');
-    const direction = new Vector3(toTarget.x, 0, toTarget.z).normalize();
-    const displacement = direction.scale(GUARD_SPEED * deltaSeconds);
+    const nearPatrolPath = this.distanceToPatrolPath() < 1.5;
+    let reachedLastKnownPosition = false;
+    if (this.guardAi.state === 'investigating' && this.lastKnownPlayerPosition) {
+      const dx = this.guardPivot.position.x - this.lastKnownPlayerPosition.x;
+      const dz = this.guardPivot.position.z - this.lastKnownPlayerPosition.z;
+      if (Math.hypot(dx, dz) < 0.4) reachedLastKnownPosition = true;
+    }
 
-    this.guardPivot.position.addInPlace(displacement);
-    this.guardPivot.position.y = this.resolveHeight(this.guardPivot.position);
+    const previousState = this.guardAi.state;
+    this.guardAi = tickGuardAi(this.guardAi, {
+      visible,
+      noiseHeard,
+      difficulty: getDifficulty(),
+      reachedLastKnownPosition,
+      nearPatrolPath,
+      dt: deltaSeconds,
+    });
+
+    if (previousState !== this.guardAi.state) {
+      this.applyConeColourForState(this.guardAi.state);
+      this.announceGuardStateTransition(previousState, this.guardAi.state);
+    }
+
+    // Movement by state.
+    switch (this.guardAi.state) {
+      case 'patrol':
+      case 'returning': {
+        const target = this.patrolPoints[this.activePatrolIndex];
+        const arrived = this.walkGuardToward(target, deltaSeconds);
+        if (arrived) {
+          this.playGuardAnimationRole('idle');
+          this.activePatrolIndex = (this.activePatrolIndex + 1) % this.patrolPoints.length;
+        } else {
+          this.playGuardAnimationRole('patrol');
+        }
+        break;
+      }
+      case 'suspicious':
+      case 'alerted': {
+        // Stop in place and face the player / last-known position.
+        const focus = this.lastKnownPlayerPosition ?? this.playerPivot.position;
+        this.faceTarget(focus);
+        this.playGuardAnimationRole('alert');
+        break;
+      }
+      case 'investigating': {
+        if (this.lastKnownPlayerPosition) {
+          this.walkGuardToward(this.lastKnownPlayerPosition, deltaSeconds);
+        }
+        this.playGuardAnimationRole('patrol');
+        break;
+      }
+      case 'chasing': {
+        this.walkGuardToward(this.playerPivot.position, deltaSeconds);
+        this.playGuardAnimationRole('patrol');
+        break;
+      }
+    }
 
     // Guard-Player Collision (Capsule-to-Capsule projection on XZ plane)
     const dx = this.guardPivot.position.x - this.playerPivot.position.x;
     const dz = this.guardPivot.position.z - this.playerPivot.position.z;
     const distance = Math.hypot(dx, dz);
-    const minDistance = 0.94; // guard radius (0.52) + player radius (0.42)
-    
+    const minDistance = 0.94;
+
     if (distance < minDistance && distance > 0.001) {
       const overlap = minDistance - distance;
       this.guardPivot.position.x += (dx / distance) * overlap;
       this.guardPivot.position.z += (dz / distance) * overlap;
     }
+  }
 
-    this.guardPivot.rotationQuaternion = null;
-    this.guardPivot.rotation.y = Math.atan2(direction.x, direction.z);
+  private announceGuardStateTransition(previous: GuardState, next: GuardState): void {
+    const icon = guardStateIcon(next);
+    const toneByIcon = { '.': 'neutral', '?': 'neutral', '!': 'alert' } as const;
+    const labels: Record<GuardState, string> = {
+      patrol: 'Patrol',
+      returning: 'Returning to route',
+      suspicious: 'Something caught their attention',
+      investigating: "Investigating Midnight's last position",
+      alerted: 'Baron’s guard locked on!',
+      chasing: 'Baron’s guard is chasing!',
+    };
+    if (icon === '!' || next === 'suspicious' || next === 'investigating') {
+      this.updateStatus(`${icon} ${labels[next]}`, toneByIcon[icon]);
+    } else if (previous !== 'patrol' && next === 'patrol') {
+      this.updateStatus(`${icon} ${labels[next]}`, 'neutral');
+    }
   }
 
   private updateLiquidTimeVial(deltaSeconds: number): void {
@@ -1539,33 +1748,19 @@ export class GameApp {
     }
 
     const playerPosition = this.playerPivot.position;
-    const guardForward = new Vector3(
-      Math.sin(this.guardPivot.rotation.y),
-      0,
-      Math.cos(this.guardPivot.rotation.y),
-    );
 
-    // Vertical stealth bonus: guards lose 40% detection range when the character is on
-    // high ground — the floor IS the danger, platforms ARE the safe zone.
-    const heightDiff = playerPosition.y - this.guardPivot.position.y;
-    const detectionRange = heightDiff > 1.2 ? VISION_RANGE * 0.6 : VISION_RANGE;
-
-    const playerVisible = isTargetVisible({
-      guardPosition: { x: this.guardPivot.position.x, z: this.guardPivot.position.z },
-      guardForward: { x: guardForward.x, z: guardForward.z },
-      targetPosition: { x: playerPosition.x, z: playerPosition.z },
-      maxDistance: detectionRange,
-      fovRadians: VISION_FOV,
-    });
-
-    if (playerVisible) {
-      this.state.hasLost = true;
-      this.playGuardAnimationRole('alert');
-      this.updateStatus("Baron's guard has eyes on Midnight! Press R to restart.", 'alert');
-      this.options.onObjectiveChange(
-        "Tip: use the pipe platform and wire bridge \u2014 stay above the guard's sightline.",
-      );
-      return;
+    if (this.guardAi.state === 'chasing') {
+      const dx = this.guardPivot.position.x - playerPosition.x;
+      const dz = this.guardPivot.position.z - playerPosition.z;
+      if (Math.hypot(dx, dz) <= GUARD_CATCH_DISTANCE) {
+        this.state.hasLost = true;
+        this.playGuardAnimationRole('alert');
+        this.updateStatus("Baron's guard caught Midnight! Press R to restart.", 'alert');
+        this.options.onObjectiveChange(
+          "Tip: break line of sight, then keep moving \u2014 stay above the guard's sightline.",
+        );
+        return;
+      }
     }
 
     if (
@@ -1648,11 +1843,16 @@ export class GameApp {
     this.guardHitRecovery = 0;
     this.verticalVelocity = 0;
     this.canDoubleJump = false;
+    this.wasAirborne = false;
     this.liquidTimeVial.isVisible = true;
     this.playerPivot.position = new Vector3(-8, 1.2, -8);
     this.guardPivot.position = this.patrolPoints[0].clone();
     this.guardPivot.position.y = this.resolveHeight(this.guardPivot.position);
     this.activePatrolIndex = 1;
+    this.guardAi = initialGuardAiState();
+    this.lastKnownPlayerPosition = null;
+    this.pendingNoise = null;
+    this.applyConeColourForState(this.guardAi.state);
     this.playGuardAnimationRole('patrol');
     this.updateStatus('Act I \u2014 The Rainy Rooftops. Slip past the Baron\'s guards.', 'neutral');
     this.options.onObjectiveChange('Plant the tracker on the Baron\'s cane. Reach the Liquid Time sample.');
