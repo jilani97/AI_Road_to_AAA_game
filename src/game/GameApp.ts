@@ -1,4 +1,5 @@
 import {
+  AbstractMesh,
   AnimationGroup,
   ArcRotateCamera,
   Color3,
@@ -9,6 +10,7 @@ import {
   Matrix,
   Mesh,
   MeshBuilder,
+  Quaternion,
   Scene,
   SceneLoader,
   StandardMaterial,
@@ -16,9 +18,11 @@ import {
   Vector3,
 } from '@babylonjs/core';
 import '@babylonjs/loaders/glTF';
+import '@babylonjs/loaders/OBJ';
 import { isTargetVisible, soundDirection } from './stealth';
 
 export type StatusTone = 'neutral' | 'alert' | 'success';
+type GuardAnimationRole = 'idle' | 'patrol' | 'alert' | 'hit' | 'defeated';
 
 interface GameAppOptions {
   canvas: HTMLCanvasElement;
@@ -57,6 +61,8 @@ const ASCENSION_DASH_IMPULSE = 9;
 const GRAVITY = 22;
 /** Distance within which the sonic-crestal sonar registers guard footsteps. */
 const SONAR_RANGE = 13;
+const GUARD_HIT_RECOVERY_SECONDS = 0.45;
+const DEFAULT_WEAPON_SOCKET_POSITION = new Vector3(0.5, 0.9, 0.4);
 
 export class GameApp {
   private readonly engine: Engine;
@@ -82,6 +88,8 @@ export class GameApp {
   private readonly weapons = ['Sting Sword', 'Blaster', 'Sniper', 'Bazooka'];
   private weaponNodes: TransformNode[] = [];
   private weaponSocket!: TransformNode;
+  private isAttacking: boolean = false;
+  private playerRightHandNode: TransformNode | null = null;
 
   private readonly playerPivot: TransformNode;
   private readonly playerMesh: Mesh;
@@ -111,6 +119,10 @@ export class GameApp {
   // Track the animations loaded from the player GLB
   private readonly playerAnimations: Map<string, AnimationGroup> = new Map();
   private currentPlayerAnimation: string = 'Idle';
+  private readonly guardAnimations: Map<string, AnimationGroup> = new Map();
+  private readonly guardAnimationBindings: Partial<Record<GuardAnimationRole, string>> = {};
+  private currentGuardAnimation = '';
+  private guardHitRecovery = 0;
 
   constructor(options: GameAppOptions) {
     this.options = options;
@@ -388,9 +400,61 @@ export class GameApp {
           idle.play(true);
         }
       }
+
+      this.attachWeaponSocketToHand(result.transformNodes, result.meshes);
     });
 
     return dummyPlayer;
+  }
+
+  private attachWeaponSocketToHand(
+    transformNodes: TransformNode[],
+    meshes: AbstractMesh[],
+  ): void {
+    if (!this.weaponSocket) {
+      return;
+    }
+
+    const rightHand = transformNodes.find(node => node.name === 'RightHand')
+      ?? transformNodes.find(node => /right.*hand|hand.*right/i.test(node.name))
+      ?? transformNodes.find(node => /right.*wrist|wrist.*right/i.test(node.name))
+      ?? transformNodes.find(node => /right.*arm/i.test(node.name));
+
+    if (!rightHand) {
+      this.weaponSocket.parent = this.playerPivot;
+      this.weaponSocket.rotationQuaternion = null;
+      this.weaponSocket.position.copyFrom(DEFAULT_WEAPON_SOCKET_POSITION);
+      this.weaponSocket.rotation.set(0, 0, 0);
+      this.weaponSocket.scaling.set(1, 1, 1);
+      return;
+    }
+
+    this.playerRightHandNode = rightHand;
+    this.weaponSocket.parent = null;
+    this.weaponSocket.rotationQuaternion = Quaternion.Identity();
+    this.weaponSocket.position.copyFrom(rightHand.getAbsolutePosition());
+    this.weaponSocket.scaling.set(1, 1, 1);
+
+    const skinnedMesh = meshes.find(mesh => !!mesh.skeleton);
+    if (skinnedMesh) {
+      this.weaponSocket.position.addInPlace(new Vector3(0.16, 0.1, 0.18));
+    }
+  }
+
+  private syncWeaponSocketToHand(): void {
+    if (!this.playerRightHandNode || !this.weaponSocket) {
+      return;
+    }
+
+    const handMatrix = this.playerRightHandNode.getWorldMatrix();
+    const handScale = new Vector3();
+    const handRotation = new Quaternion();
+    const handPosition = new Vector3();
+    handMatrix.decompose(handScale, handRotation, handPosition);
+
+    this.weaponSocket.parent = null;
+    this.weaponSocket.rotationQuaternion = handRotation;
+    this.weaponSocket.position.copyFrom(handPosition);
   }
 
   /** One half of the Hud-hud crest — dramatic feathers with cyan fiber-optics. */
@@ -432,25 +496,14 @@ export class GameApp {
     this.weaponSocket = new TransformNode('weaponSocket', this.scene);
     this.weaponSocket.parent = this.playerPivot;
     // Offset the socket relative to the pivot so it aligns with the right arm/hand area
-    this.weaponSocket.position = new Vector3(0.5, 0.9, 0.4);
+    this.weaponSocket.position.copyFrom(DEFAULT_WEAPON_SOCKET_POSITION);
 
-    // 0: Sword - Loaded from OBJ
-    const swordNode = new TransformNode('weapon_sword_root', this.scene);
+    // 0: Sword - Procedural fallback so the weapon is always visible in-hand
+    const swordNode = this.createSwordMesh();
     swordNode.parent = this.weaponSocket;
-    
-    // Attempting to load the sword model
-    SceneLoader.ImportMeshAsync("", "/models/", "Sting-Sword-lowpoly.obj", this.scene).then((result) => {
-      // Typically the actual geometry is in meshes[0] or meshes[1]
-      const root = result.meshes[0];
-      // Object may be scaled huge or tiny by the artist
-      root.scaling = new Vector3(0.015, 0.015, 0.015);
-      
-      // The sword point might face down or sideways, angle it properly forward
-      root.rotation = new Vector3(Math.PI / 2, Math.PI / 2, 0); 
-      
-      // Add all meshes to the root node so we can toggle them easily
-      result.meshes.forEach(m => m.parent = swordNode);
-    }).catch(err => console.error("Failed to load Sting-Sword:", err));
+    swordNode.position = new Vector3(0.02, -0.02, 0.14);
+    swordNode.rotation = Vector3.Zero();
+    swordNode.scaling = new Vector3(1, 1, 1);
 
     // 1: Blaster - A small compact gun
     const blaster = MeshBuilder.CreateBox('weapon_blaster', { width: 0.15, height: 0.25, depth: 0.5 }, this.scene);
@@ -490,6 +543,41 @@ export class GameApp {
     }
   }
 
+  private createSwordMesh(): TransformNode {
+    const swordRoot = new TransformNode('weapon_sword_root', this.scene);
+
+    const blade = MeshBuilder.CreateBox('weapon_sword_blade', { width: 0.06, height: 0.06, depth: 1.15 }, this.scene);
+    blade.parent = swordRoot;
+    blade.position.z = 0.56;
+
+    const guard = MeshBuilder.CreateBox('weapon_sword_guard', { width: 0.32, height: 0.08, depth: 0.08 }, this.scene);
+    guard.parent = swordRoot;
+    guard.position.z = 0.06;
+
+    const handle = MeshBuilder.CreateCylinder('weapon_sword_handle', { diameter: 0.07, height: 0.28, tessellation: 10 }, this.scene);
+    handle.parent = swordRoot;
+    handle.rotation.x = Math.PI / 2;
+    handle.position.z = -0.12;
+
+    const pommel = MeshBuilder.CreateSphere('weapon_sword_pommel', { diameter: 0.1, segments: 8 }, this.scene);
+    pommel.parent = swordRoot;
+    pommel.position.z = -0.28;
+
+    const bladeMaterial = new StandardMaterial('swordBladeMaterial', this.scene);
+    bladeMaterial.diffuseColor = new Color3(0.86, 0.9, 0.98);
+    bladeMaterial.specularColor = new Color3(0.95, 0.95, 1);
+    blade.material = bladeMaterial;
+
+    const hiltMaterial = new StandardMaterial('swordHiltMaterial', this.scene);
+    hiltMaterial.diffuseColor = new Color3(0.2, 0.16, 0.12);
+    hiltMaterial.emissiveColor = new Color3(0.14, 0.08, 0.02);
+    guard.material = hiltMaterial;
+    handle.material = hiltMaterial;
+    pommel.material = hiltMaterial;
+
+    return swordRoot;
+  }
+
   /** Baron von Steer's guard — larger, darker, more threatening. */
   private createGuardMesh(): Mesh {
     // Create an invisible dummy base to attach the GLB model
@@ -511,9 +599,13 @@ export class GameApp {
       // Rotate 180 degrees if the model faces backward by default
       golem.rotation = new Vector3(0, 0, 0); // Removed the Math.PI rotation so it faces forward along its pivot
 
-      // If there are animations (like walk cycle), play the first one
       if (result.animationGroups && result.animationGroups.length > 0) {
-        result.animationGroups[0].play(true);
+        result.animationGroups.forEach(anim => {
+          this.guardAnimations.set(anim.name, anim);
+          anim.stop();
+        });
+        this.bindGuardAnimations();
+        this.playGuardAnimationRole('patrol');
       }
     });
 
@@ -679,9 +771,13 @@ export class GameApp {
     if (this.state.isPaused) {
       const currentAnim = this.playerAnimations.get(this.currentPlayerAnimation);
       if (currentAnim) currentAnim.pause();
+      const currentGuardAnim = this.guardAnimations.get(this.currentGuardAnimation);
+      if (currentGuardAnim) currentGuardAnim.pause();
     } else {
       const currentAnim = this.playerAnimations.get(this.currentPlayerAnimation);
       if (currentAnim) currentAnim.play(true);
+      const currentGuardAnim = this.guardAnimations.get(this.currentGuardAnimation);
+      if (currentGuardAnim) currentGuardAnim.play(currentGuardAnim.loopAnimation);
       // Reset delta time to avoid jumping logic when unpaused
       this.lastFrameTime = performance.now();
     }
@@ -690,6 +786,7 @@ export class GameApp {
   private update(deltaSeconds: number): void {
     if (this.state.isPaused) return;
 
+    this.syncWeaponSocketToHand();
     this.updatePlayer(deltaSeconds);
     this.updateGuard(deltaSeconds);
     this.updateLiquidTimeVial(deltaSeconds);
@@ -700,6 +797,8 @@ export class GameApp {
   }
 
   private useWeapon(): void {
+    if (this.isAttacking) return;
+
     const weaponIndex = this.state.currentWeapon;
     const playerPos = this.playerPivot.position.clone();
     playerPos.y += 1.0; // Shoot from chest/weapon height
@@ -712,8 +811,35 @@ export class GameApp {
     );
 
     if (weaponIndex === 0) {
-      // Sword 'swing' - a short-lived crescent or simply push the guard if close
-      this.spawnProjectile(playerPos, facingDirection, 15, 0.2, new Color3(0.2, 0.8, 0.2), 0.8);
+      // Sword - Trigger Triple_Combo_Attack animation
+      this.isAttacking = true;
+      const atkAnim = this.playerAnimations.get('Triple_Combo_Attack');
+      if (atkAnim) {
+        const currentAnim = this.playerAnimations.get(this.currentPlayerAnimation);
+        if (currentAnim) currentAnim.stop();
+        
+        atkAnim.reset();
+        atkAnim.play(false);
+        this.currentPlayerAnimation = 'Triple_Combo_Attack';
+        
+        atkAnim.onAnimationEndObservable.addOnce(() => {
+          this.isAttacking = false;
+        });
+      } else {
+        // Fallback if animation not found
+        this.isAttacking = false;
+      }
+
+      // Check melee distance to push the guard back
+      const dist = Vector3.Distance(this.playerPivot.position, this.guardPivot.position);
+      if (dist < 3.0) {
+        const pushDir = this.guardPivot.position.subtract(this.playerPivot.position);
+        pushDir.y = 0;
+        pushDir.normalize();
+        this.guardPivot.position.addInPlace(pushDir.scale(2.0)); // Knockback guard
+        this.triggerGuardHitReaction();
+      }
+
     } else if (weaponIndex === 1) {
       // Blaster - fast small laser
       this.spawnProjectile(playerPos, facingDirection, 25, 2.0, new Color3(0.8, 0.2, 0.2), 0.2);
@@ -755,13 +881,113 @@ export class GameApp {
       if (this.guardPivot && Vector3.Distance(p.mesh.position, this.guardPivot.position.add(new Vector3(0, 1, 0))) < 1.0) {
         // Impact! Stun or push guard back
         this.guardPivot.position.addInPlace(p.direction.scale(2.0)); // push guard
+        this.triggerGuardHitReaction();
         p.mesh.dispose();
         this.projectiles.splice(i, 1);
       }
     }
   }
 
+  private bindGuardAnimations(): void {
+    this.guardAnimationBindings.idle = this.findGuardAnimationName([
+      'idle', 'stand', 'breath', 'wait', 'look', 'rest',
+    ]);
+    this.guardAnimationBindings.patrol = this.findGuardAnimationName([
+      'walk', 'run', 'patrol', 'move', 'locomotion', 'stride',
+    ]) ?? this.guardAnimationBindings.idle;
+    this.guardAnimationBindings.alert = this.findGuardAnimationName([
+      'alert', 'attack', 'roar', 'taunt', 'shout', 'scream', 'threat',
+    ]) ?? this.guardAnimationBindings.patrol ?? this.guardAnimationBindings.idle;
+    this.guardAnimationBindings.hit = this.findGuardAnimationName([
+      'hit', 'hurt', 'damage', 'impact', 'stagger', 'flinch', 'react',
+    ]);
+    this.guardAnimationBindings.defeated = this.findGuardAnimationName([
+      'death', 'dead', 'die', 'defeat', 'fall', 'knockout',
+    ]);
+
+    if (!this.guardAnimationBindings.idle) {
+      this.guardAnimationBindings.idle = this.guardAnimations.keys().next().value;
+    }
+    if (!this.guardAnimationBindings.patrol) {
+      this.guardAnimationBindings.patrol = this.guardAnimationBindings.idle;
+    }
+    if (!this.guardAnimationBindings.alert) {
+      this.guardAnimationBindings.alert = this.guardAnimationBindings.patrol;
+    }
+  }
+
+  private findGuardAnimationName(candidates: string[]): string | undefined {
+    let bestName: string | undefined;
+    let bestScore = -1;
+
+    for (const name of this.guardAnimations.keys()) {
+      const normalizedName = normalizeAnimationName(name);
+      let score = 0;
+
+      for (const candidate of candidates) {
+        const normalizedCandidate = normalizeAnimationName(candidate);
+        if (!normalizedCandidate) {
+          continue;
+        }
+        if (normalizedName === normalizedCandidate) {
+          score = Math.max(score, 100);
+        } else if (normalizedName.startsWith(normalizedCandidate)) {
+          score = Math.max(score, 80);
+        } else if (normalizedName.includes(normalizedCandidate)) {
+          score = Math.max(score, 60);
+        }
+      }
+
+      if (score > bestScore) {
+        bestScore = score;
+        bestName = name;
+      }
+    }
+
+    return bestScore > 0 ? bestName : undefined;
+  }
+
+  private playGuardAnimationRole(role: GuardAnimationRole): void {
+    const animationName = this.guardAnimationBindings[role];
+    if (!animationName || this.currentGuardAnimation === animationName) {
+      return;
+    }
+
+    const nextAnimation = this.guardAnimations.get(animationName);
+    if (!nextAnimation) {
+      return;
+    }
+
+    const currentAnimation = this.guardAnimations.get(this.currentGuardAnimation);
+    if (currentAnimation) {
+      currentAnimation.stop();
+    }
+
+    const shouldLoop = role !== 'hit' && role !== 'defeated';
+    nextAnimation.reset();
+    nextAnimation.play(shouldLoop);
+    this.currentGuardAnimation = animationName;
+
+    if (!shouldLoop) {
+      nextAnimation.onAnimationEndObservable.addOnce(() => {
+        if (this.currentGuardAnimation !== animationName) {
+          return;
+        }
+        this.currentGuardAnimation = '';
+        if (role === 'hit' && !this.state.hasLost && !this.state.hasWon) {
+          this.playGuardAnimationRole('patrol');
+        }
+      });
+    }
+  }
+
+  private triggerGuardHitReaction(): void {
+    this.guardHitRecovery = GUARD_HIT_RECOVERY_SECONDS;
+    this.playGuardAnimationRole('hit');
+  }
+
   private setPlayerAnimation(name: string): void {
+    if (this.isAttacking && name !== 'Dead') return;
     if (this.currentPlayerAnimation === name) return;
     const nextAnim = this.playerAnimations.get(name);
     if (!nextAnim) return;
@@ -872,15 +1098,33 @@ export class GameApp {
   }
 
   private updateGuard(deltaSeconds: number): void {
+    if (this.state.hasLost) {
+      this.playGuardAnimationRole('alert');
+      return;
+    }
+
+    if (this.state.hasWon) {
+      this.playGuardAnimationRole('idle');
+      return;
+    }
+
+    if (this.guardHitRecovery > 0) {
+      this.guardHitRecovery = Math.max(0, this.guardHitRecovery - deltaSeconds);
+      this.playGuardAnimationRole('hit');
+      return;
+    }
+
     const target = this.patrolPoints[this.activePatrolIndex];
     const toTarget = target.subtract(this.guardPivot.position);
     const planarDistance = Math.hypot(toTarget.x, toTarget.z);
 
     if (planarDistance < 0.15) {
+      this.playGuardAnimationRole('idle');
       this.activePatrolIndex = (this.activePatrolIndex + 1) % this.patrolPoints.length;
       return;
     }
 
+    this.playGuardAnimationRole('patrol');
     const direction = new Vector3(toTarget.x, 0, toTarget.z).normalize();
     const displacement = direction.scale(GUARD_SPEED * deltaSeconds);
 
@@ -994,6 +1238,7 @@ export class GameApp {
 
     if (playerVisible) {
       this.state.hasLost = true;
+      this.playGuardAnimationRole('alert');
       this.updateStatus("Baron's guard has eyes on Midnight! Press R to restart.", 'alert');
       this.options.onObjectiveChange(
         "Tip: use the pipe platform and wire bridge \u2014 stay above the guard's sightline.",
@@ -1078,6 +1323,7 @@ export class GameApp {
     this.state.hasLost = false;
     this.state.hasWon = false;
     this.state.liquidTimeSecured = false;
+    this.guardHitRecovery = 0;
     this.verticalVelocity = 0;
     this.canDoubleJump = false;
     this.liquidTimeVial.isVisible = true;
@@ -1085,6 +1331,7 @@ export class GameApp {
     this.guardPivot.position = this.patrolPoints[0].clone();
     this.guardPivot.position.y = this.resolveHeight(this.guardPivot.position);
     this.activePatrolIndex = 1;
+    this.playGuardAnimationRole('patrol');
     this.updateStatus('Act I \u2014 The Rainy Rooftops. Slip past the Baron\'s guards.', 'neutral');
     this.options.onObjectiveChange('Plant the tracker on the Baron\'s cane. Reach the Liquid Time sample.');
     this.options.onSonarChange('Scanning\u2026');
@@ -1101,6 +1348,10 @@ function wrapAngleDelta(delta: number): number {
   if (d > Math.PI) d -= 2 * Math.PI;
   if (d < -Math.PI) d += 2 * Math.PI;
   return d;
+}
+
+function normalizeAnimationName(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, '');
 }
 
 void Matrix.Identity();
