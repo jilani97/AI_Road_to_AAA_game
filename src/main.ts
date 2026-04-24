@@ -2,6 +2,15 @@ import './style.css';
 import { GameApp } from './game/GameApp';
 import { hydrateDifficulty, setDifficulty } from './game/difficulty';
 import {
+  CHARACTER_ORDER,
+  getCharacter,
+  isCharacterId,
+  loadPersistedCharacter,
+  persistCharacter,
+  type CharacterId,
+} from './game/characters';
+import { getSkill } from './game/skills';
+import {
   loadSettings,
   saveSettings,
   type CameraMinDistance,
@@ -65,6 +74,14 @@ appRoot.innerHTML = `
     </aside>
   </div>
   <div id="damage-vignette" class="damage-vignette"></div>
+  <div id="character-select" class="overlay">
+    <div class="menu-box character-select-box">
+      <h2>Choose your operative</h2>
+      <p class="character-select-subtitle">The Midnight Syndicate — Act I: The Rainy Rooftops</p>
+      <div id="character-grid" class="character-grid"></div>
+      <button id="btn-start-run">Start Run</button>
+    </div>
+  </div>
   <div id="pause-menu" class="overlay hidden">
     <div class="menu-box">
       <h2>Paused</h2>
@@ -132,6 +149,9 @@ const alarmElement = document.querySelector<HTMLDivElement>('#alarm-tier');
 const currencyAmountElement = document.querySelector<HTMLSpanElement>('#currency-amount');
 const damageVignette = document.querySelector<HTMLDivElement>('#damage-vignette');
 const shellElement = document.querySelector<HTMLDivElement>('.shell');
+const characterSelectOverlay = document.querySelector<HTMLDivElement>('#character-select');
+const characterGrid = document.querySelector<HTMLDivElement>('#character-grid');
+const btnStartRun = document.querySelector<HTMLButtonElement>('#btn-start-run');
 
 if (
   !canvas ||
@@ -146,10 +166,70 @@ if (
   !alarmElement ||
   !currencyAmountElement ||
   !damageVignette ||
-  !shellElement
+  !shellElement ||
+  !characterSelectOverlay ||
+  !characterGrid ||
+  !btnStartRun
 ) {
   throw new Error('Game UI elements not found');
 }
+
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"']/g, (ch) => {
+    switch (ch) {
+      case '&': return '&amp;';
+      case '<': return '&lt;';
+      case '>': return '&gt;';
+      case '"': return '&quot;';
+      case "'": return '&#39;';
+      default: return ch;
+    }
+  });
+}
+
+function formatMultiplier(n: number): string {
+  const fixed = n.toFixed(2);
+  return `${fixed.replace(/\.?0+$/, '')}×`;
+}
+
+let selectedCharacter: CharacterId = loadPersistedCharacter();
+
+function renderCharacterGrid(): void {
+  const cards = CHARACTER_ORDER.map((id) => {
+    const c = getCharacter(id);
+    const starters = c.startingSkills
+      .map((s) => getSkill(s)?.name ?? s)
+      .map(escapeHtml)
+      .join(' · ');
+    const checked = id === selectedCharacter ? 'checked' : '';
+    return `
+      <label class="character-card" data-character="${id}">
+        <input type="radio" name="character" value="${id}" ${checked}>
+        <div class="character-card-body">
+          <h3>${escapeHtml(c.name)}</h3>
+          <p class="archetype">${escapeHtml(c.archetype)}</p>
+          <dl class="character-stats">
+            <div><dt>HP</dt><dd>${c.stats.hp}</dd></div>
+            <div><dt>Speed</dt><dd>${formatMultiplier(c.stats.speedMultiplier)}</dd></div>
+            <div><dt>Jump</dt><dd>${formatMultiplier(c.stats.jumpMultiplier)}</dd></div>
+            <div><dt>Sonar</dt><dd>${formatMultiplier(c.stats.sonarRangeMultiplier)}</dd></div>
+            <div><dt>Damage</dt><dd>${formatMultiplier(c.stats.weaponDamageMultiplier)}</dd></div>
+            <div><dt>i-frame Δ</dt><dd>${c.stats.iFrameModifierSeconds >= 0 ? '+' : ''}${c.stats.iFrameModifierSeconds}s</dd></div>
+          </dl>
+          <p class="starters">Starting skills: ${starters}</p>
+        </div>
+      </label>
+    `;
+  }).join('');
+  characterGrid!.innerHTML = cards;
+}
+
+characterGrid!.addEventListener('change', (event) => {
+  const target = event.target as HTMLInputElement | null;
+  if (target && target.name === 'character' && isCharacterId(target.value)) {
+    selectedCharacter = target.value;
+  }
+});
 
 const ALARM_LABELS = {
   normal: 'Normal',
@@ -217,6 +297,17 @@ const game = new GameApp({
   onCurrencyChange: (balance) => {
     currencyAmountElement.textContent = String(balance);
   },
+  onAwaitingStart: () => {
+    renderCharacterGrid();
+    characterSelectOverlay!.classList.remove('hidden');
+  },
+});
+
+btnStartRun!.addEventListener('click', () => {
+  game.setCharacter(selectedCharacter);
+  persistCharacter(selectedCharacter);
+  characterSelectOverlay!.classList.add('hidden');
+  game.startRun();
 });
 
 btnResume.addEventListener('click', () => {

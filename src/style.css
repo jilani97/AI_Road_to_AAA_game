@@ -203,6 +203,108 @@ select {
   background: rgba(0, 200, 220, 0.3);
 }
 
+.character-select-box {
+  min-width: 760px;
+  max-width: 920px;
+}
+
+.character-select-subtitle {
+  margin: -8px 0 20px;
+  color: #8faebb;
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.character-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 14px;
+  margin-bottom: 20px;
+}
+
+.character-card {
+  position: relative;
+  display: block;
+  padding: 0;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(10, 22, 30, 0.7);
+  cursor: pointer;
+  transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+  text-align: left;
+}
+
+.character-card:hover {
+  transform: translateY(-2px);
+  border-color: rgba(0, 200, 220, 0.4);
+}
+
+.character-card input[type='radio'] {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.character-card:has(input[type='radio']:checked) {
+  border-color: rgba(0, 220, 240, 0.85);
+  background: rgba(10, 30, 40, 0.9);
+  box-shadow: 0 0 18px rgba(0, 200, 220, 0.45), 0 0 40px rgba(0, 200, 220, 0.15);
+}
+
+.character-card-body {
+  padding: 14px 16px 16px;
+}
+
+.character-card h3 {
+  margin: 0 0 4px;
+  color: #ffe066;
+  font-size: 1.15rem;
+  letter-spacing: 0.04em;
+  text-shadow: 0 0 6px rgba(255, 200, 30, 0.35);
+}
+
+.character-card .archetype {
+  margin: 0 0 12px;
+  color: #8fd1e3;
+  font-size: 0.78rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.character-stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px 14px;
+  margin: 0 0 12px;
+  font-size: 0.85rem;
+}
+
+.character-stats div {
+  display: flex;
+  justify-content: space-between;
+  padding: 2px 0;
+  border-bottom: 1px dashed rgba(255, 255, 255, 0.07);
+}
+
+.character-stats dt {
+  color: #8faebb;
+  margin: 0;
+}
+
+.character-stats dd {
+  color: #e8f2ff;
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.character-card .starters {
+  margin: 8px 0 0;
+  font-size: 0.78rem;
+  color: #c7dbe3;
+  line-height: 1.4;
+}
+
 .settings {
   text-align: left;
   margin-top: 24px;

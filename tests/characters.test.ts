@@ -1,11 +1,30 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   CHARACTER_ORDER,
+  CHARACTER_STORAGE_KEY,
   CHARACTERS,
   DEFAULT_CHARACTER,
   getCharacter,
   isCharacterId,
+  loadPersistedCharacter,
+  persistCharacter,
 } from '../src/game/characters';
+
+function createMemoryStorage() {
+  const store = new Map<string, string>();
+  return {
+    getItem: (key: string) => store.get(key) ?? null,
+    setItem: (key: string, value: string) => {
+      store.set(key, value);
+    },
+    removeItem: (key: string) => {
+      store.delete(key);
+    },
+    clear: () => {
+      store.clear();
+    },
+  };
+}
 
 describe('roster integrity', () => {
   it('exposes three distinct characters in the selection order', () => {
@@ -66,5 +85,44 @@ describe('getCharacter', () => {
     expect(getCharacter('midnight').name).toBe('Midnight');
     expect(getCharacter('ironclaw').name).toBe('Ironclaw');
     expect(getCharacter('kestrel').name).toBe('Kestrel');
+  });
+});
+
+describe('persisted character', () => {
+  beforeEach(() => {
+    vi.stubGlobal('localStorage', createMemoryStorage());
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('falls back to DEFAULT_CHARACTER when nothing is stored', () => {
+    expect(loadPersistedCharacter()).toBe(DEFAULT_CHARACTER);
+  });
+
+  it('round-trips any valid CharacterId', () => {
+    for (const id of CHARACTER_ORDER) {
+      persistCharacter(id);
+      expect(loadPersistedCharacter()).toBe(id);
+    }
+  });
+
+  it('ignores a corrupt stored value and returns the default', () => {
+    localStorage.setItem(CHARACTER_STORAGE_KEY, 'baron');
+    expect(loadPersistedCharacter()).toBe(DEFAULT_CHARACTER);
+  });
+
+  it('survives a localStorage that throws on access', () => {
+    vi.stubGlobal('localStorage', {
+      getItem: () => {
+        throw new Error('storage denied');
+      },
+      setItem: () => {
+        throw new Error('storage denied');
+      },
+    });
+    expect(loadPersistedCharacter()).toBe(DEFAULT_CHARACTER);
+    expect(() => persistCharacter('kestrel')).not.toThrow();
   });
 });

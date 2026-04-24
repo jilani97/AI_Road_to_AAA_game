@@ -91,6 +91,10 @@ interface GameAppOptions {
   /** Called on every balance change (earn / spend / end-of-run). HUD renders
    *  the coin total; persistence is handled inside `currency.ts`. */
   onCurrencyChange?: (balance: number) => void;
+  /** Called whenever the game enters "awaiting start" state — once at boot
+   *  (before the first `startRun`) and on every `reset()`. Main.ts uses this
+   *  to show the character-select overlay. */
+  onAwaitingStart?: () => void;
 }
 
 interface InputState {
@@ -102,6 +106,10 @@ interface InputState {
 }
 
 interface GameState {
+  /** False until `startRun()` fires — the character-select overlay gates boot
+   *  and post-reset. `update()` short-circuits while false so the scene
+   *  renders but gameplay doesn't tick. */
+  hasStarted: boolean;
   hasWon: boolean;
   hasLost: boolean;
   liquidTimeSecured: boolean;
@@ -219,6 +227,7 @@ export class GameApp {
   };
 
   private readonly state: GameState = {
+    hasStarted: false,
     hasWon: false,
     hasLost: false,
     liquidTimeSecured: false,
@@ -390,6 +399,7 @@ export class GameApp {
     this.options.onHealthChange?.(this.hp, this.character.stats.hp);
     this.options.onAlarmChange?.(this.alarm.tier);
     this.options.onCurrencyChange?.(getBalance());
+    this.options.onAwaitingStart?.();
   }
 
   public start(): void {
@@ -505,6 +515,20 @@ export class GameApp {
     this.reviveTokenUsed = false;
     this.timeSinceLastSeen = Number.POSITIVE_INFINITY;
     this.options.onHealthChange?.(this.hp, this.character.stats.hp);
+  }
+
+  /** Starts gameplay. Called by the character-select overlay after a pick is
+   *  confirmed. Safe to call repeatedly — no-ops if already started. */
+  public startRun(): void {
+    if (this.state.hasStarted) return;
+    this.state.hasStarted = true;
+    this.lastFrameTime = performance.now();
+  }
+
+  /** True while the character-select overlay should be visible. Main.ts
+   *  queries this to render / hide the overlay. */
+  public isAwaitingStart(): boolean {
+    return !this.state.hasStarted;
   }
 
   public getCharacter(): CharacterProfile {
@@ -1199,8 +1223,14 @@ export class GameApp {
 
   private registerInput(): void {
     this.scene.onPointerDown = (evt) => {
-      // Left click (0) to use weapon
-      if (evt.button === 0 && !this.state.isPaused && !this.state.hasLost && !this.state.hasWon) {
+      // Left click (0) to use weapon — gated by active gameplay.
+      if (
+        evt.button === 0 &&
+        this.state.hasStarted &&
+        !this.state.isPaused &&
+        !this.state.hasLost &&
+        !this.state.hasWon
+      ) {
         this.useWeapon();
       }
     };
@@ -1229,7 +1259,7 @@ export class GameApp {
           break;
         case 'Space':
           // Ascension Dash — diagonal burst using micro-thrusters and wings
-          if (!this.state.hasLost && !this.state.hasWon) {
+          if (this.state.hasStarted && !this.state.hasLost && !this.state.hasWon) {
             if (this.isOnGround()) {
               this.verticalVelocity = ASCENSION_DASH_IMPULSE * this.character.stats.jumpMultiplier;
               this.canDoubleJump = true;
@@ -1243,7 +1273,11 @@ export class GameApp {
           }
           break;
         case 'KeyR':
-          if (this.state.hasLost || this.state.hasWon) {
+          // R restarts after win/loss; during a run it also works (pause menu
+          // "Restart Level" relies on this path) but only if gameplay has
+          // actually started — blocks an accidental R while the character-
+          // select overlay is open.
+          if (this.state.hasStarted) {
             this.reset();
           }
           break;
@@ -1305,6 +1339,7 @@ export class GameApp {
   }
 
   public togglePause(): void {
+    if (!this.state.hasStarted) return;
     if (this.state.hasLost || this.state.hasWon) return;
     this.state.isPaused = !this.state.isPaused;
     if (this.options.onPauseToggle) {
@@ -1332,6 +1367,7 @@ export class GameApp {
   }
 
   private update(deltaSeconds: number): void {
+    if (!this.state.hasStarted) return;
     if (this.state.isPaused) return;
 
     this.syncWeaponSocketToHand();
@@ -2417,6 +2453,9 @@ export class GameApp {
   }
 
   private reset(): void {
+    // Return to character-select. `startRun()` flips this back once the player
+    // confirms a pick in the overlay.
+    this.state.hasStarted = false;
     this.state.hasLost = false;
     this.state.hasWon = false;
     this.state.liquidTimeSecured = false;
@@ -2466,6 +2505,7 @@ export class GameApp {
     this.updateStatus('Act I \u2014 The Rainy Rooftops. Slip past the Baron\'s guards.', 'neutral');
     this.options.onObjectiveChange('Plant the tracker on the Baron\'s cane. Reach the Liquid Time sample.');
     this.options.onSonarChange('Scanning\u2026');
+    this.options.onAwaitingStart?.();
   }
 }
 

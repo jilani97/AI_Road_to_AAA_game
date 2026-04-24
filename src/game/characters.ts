@@ -90,3 +90,32 @@ export function isCharacterId(value: unknown): value is CharacterId {
 export function getCharacter(id: CharacterId): CharacterProfile {
   return CHARACTERS[id];
 }
+
+export const CHARACTER_STORAGE_KEY = 'neonTail.character.v1';
+
+function safeGetItem(key: string): string | null {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function safeSetItem(key: string, value: string): void {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // storage unavailable — session-only
+  }
+}
+
+/** Reads the persisted character from localStorage, or returns the default
+ *  when none has been saved (or storage is unavailable / value is corrupt). */
+export function loadPersistedCharacter(): CharacterId {
+  const raw = safeGetItem(CHARACTER_STORAGE_KEY);
+  return isCharacterId(raw) ? raw : DEFAULT_CHARACTER;
+}
+
+export function persistCharacter(id: CharacterId): void {
+  safeSetItem(CHARACTER_STORAGE_KEY, id);
+}
