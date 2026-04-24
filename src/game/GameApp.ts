@@ -40,9 +40,9 @@ import {
   guardStateIcon,
   initialGuardAiState,
   tickGuardAi,
-  type GuardAiState,
   type GuardState,
 } from './guardAi';
+import { createGuard, resetGuard, type Guard, type NoiseEvent } from './guard';
 import { getDifficulty } from './difficulty';
 import { earn, hydrateCurrency, spend } from './currency';
 import type { Difficulty } from './settings';
@@ -167,12 +167,10 @@ export class GameApp {
   private readonly crestPartRight: Mesh;
   /** Glowing cyan ocular implant over the right eye — highlights guard positions. */
   private readonly ocularImplant: Mesh;
-  private readonly guardPivot: TransformNode;
-  private readonly guardMesh: Mesh;
-  private readonly visionCone: Mesh;
+  /** All guards on the map. Task 6b introduced the array; 6c will grow it past one. */
+  private readonly guards: Guard[] = [];
   /** The Liquid Time sample — the MacGuffin of the Chronos Heist. */
   private readonly liquidTimeVial: Mesh;
-  private readonly patrolPoints: Vector3[];
   private readonly colliders: Array<{ x: number, z: number, w: number, d: number, topY: number, bottomY: number }> = [];
   /** Parallel to `colliders` — the mesh each collider belongs to (for fade/collision wiring). */
   private readonly colliderMeshes: Array<AbstractMesh | null> = [];
@@ -194,7 +192,6 @@ export class GameApp {
   }> = [];
   private colliderAabbs: Aabb[] = [];
 
-  private activePatrolIndex = 0;
   private lastFrameTime = performance.now();
   /** Vertical velocity for the Hud-hud's ascension dash physics. */
   private verticalVelocity = 0;
@@ -205,9 +202,6 @@ export class GameApp {
   private readonly guardAnimations: Map<string, AnimationGroup> = new Map();
   private readonly guardAnimationBindings: Partial<Record<GuardAnimationRole, string>> = {};
   private currentGuardAnimation = '';
-  /** Non-null while the guard is knocked out. `remainingSeconds === Infinity` on Easy (permanent). */
-  private guardKnockdown: { remainingSeconds: number; pendingRescind: number } | null = null;
-  private guardKnockoutCount: number = 0;
 
   private sun!: DirectionalLight;
   private shadowGenerator: ShadowGenerator | null = null;
@@ -216,9 +210,9 @@ export class GameApp {
   private cameraMode: CameraSettings['mode'] = 'orbit';
   private readonly fadedMeshes: Set<AbstractMesh> = new Set();
   private character: CharacterProfile = getCharacter(DEFAULT_CHARACTER);
-  private guardAi: GuardAiState = initialGuardAiState();
-  private lastKnownPlayerPosition: Vector3 | null = null;
-  private pendingNoise: { origin: Vector3; radius: number } | null = null;
+  /** Noise events queued this frame. Every guard evaluates the list each tick,
+   *  then it's cleared. Populated by `emitNoise`; consumed in `updateGuard`. */
+  private pendingNoises: NoiseEvent[] = [];
   private wasAirborne: boolean = false;
   private hp: number = getCharacter(DEFAULT_CHARACTER).stats.hp;
   private iFramesRemaining: number = 0;
@@ -290,24 +284,15 @@ export class GameApp {
     this.ocularImplant.parent = this.playerPivot;
     this.ocularImplant.position = new Vector3(-0.27, 0.5, 0.3);
 
-    this.guardPivot = new TransformNode('guardPivot', this.scene);
-    this.guardPivot.position = new Vector3(14, 0.75, 0);
-    this.guardMesh = this.createGuardMesh();
-    this.guardMesh.parent = this.guardPivot;
-
-    this.visionCone = this.createVisionCone();
-    this.visionCone.parent = this.guardPivot;
-    this.applyConeColourForState(this.guardAi.state);
-
-    this.liquidTimeVial = this.createLiquidTimeVial();
-    this.liquidTimeVial.position = new Vector3(9, 1.2, 8.5);
-
-    this.patrolPoints = [
+    this.guards.push(this.spawnGuard(new Vector3(14, 0.75, 0), [
       new Vector3(14, 0.75, 0),
       new Vector3(0, 0.75, 14),
       new Vector3(-14, 0.75, 0),
       new Vector3(0, 0.75, -14),
-    ];
+    ]));
+
+    this.liquidTimeVial = this.createLiquidTimeVial();
+    this.liquidTimeVial.position = new Vector3(9, 1.2, 8.5);
 
     hydrateCurrency();
     this.activeRunSkills = this.character.startingSkills.slice();
@@ -888,6 +873,21 @@ export class GameApp {
     return swordRoot;
   }
 
+  /** Builds one full guard — scene-graph + AI state + patrol route — and wires it
+   *  into the shared cone-colour palette. Used by the constructor and (later by
+   *  Task 6c / 6e) by zone seeding and rooftop-hatch reinforcements. */
+  private spawnGuard(position: Vector3, patrolPoints: Vector3[]): Guard {
+    const pivot = new TransformNode(`guardPivot_${this.guards.length}`, this.scene);
+    pivot.position = position.clone();
+    const mesh = this.createGuardMesh();
+    mesh.parent = pivot;
+    const visionCone = this.createVisionCone();
+    visionCone.parent = pivot;
+    const guard = createGuard(pivot, mesh, visionCone, patrolPoints);
+    this.applyConeColourForGuard(guard);
+    return guard;
+  }
+
   /** Baron von Steer's guard — larger, darker, more threatening. */
   private createGuardMesh(): Mesh {
     // Create an invisible dummy base to attach the GLB model
@@ -1149,26 +1149,26 @@ export class GameApp {
         this.isAttacking = false;
       }
 
-      // Check melee distance and line-of-sight before landing the hit — a vent
-      // between the player and the guard should block the swing.
-      const dist = Vector3.Distance(this.playerPivot.position, this.guardPivot.position);
-      if (dist < SWORD_RANGE) {
+      // Pick the nearest non-KO'd guard inside sword range; a vent between the
+      // player and that guard blocks the swing (Task 2 line-of-sight guard).
+      const target = this.nearestLivingGuardWithin(SWORD_RANGE);
+      if (target) {
         const origin = {
           x: this.playerPivot.position.x,
           y: this.playerPivot.position.y + PLAYER_EYE_HEIGHT,
           z: this.playerPivot.position.z,
         };
-        const target = {
-          x: this.guardPivot.position.x,
-          y: this.guardPivot.position.y + PLAYER_EYE_HEIGHT,
-          z: this.guardPivot.position.z,
+        const los = {
+          x: target.pivot.position.x,
+          y: target.pivot.position.y + PLAYER_EYE_HEIGHT,
+          z: target.pivot.position.z,
         };
-        if (!raycastHitsAnyAabb(origin, target, this.colliderAabbs)) {
-          const pushDir = this.guardPivot.position.subtract(this.playerPivot.position);
+        if (!raycastHitsAnyAabb(origin, los, this.colliderAabbs)) {
+          const pushDir = target.pivot.position.subtract(this.playerPivot.position);
           pushDir.y = 0;
           pushDir.normalize();
-          this.guardPivot.position.addInPlace(pushDir.scale(2.0));
-          this.triggerGuardHitReaction();
+          target.pivot.position.addInPlace(pushDir.scale(2.0));
+          this.triggerGuardHitReaction(target);
         }
       }
 
@@ -1245,15 +1245,21 @@ export class GameApp {
         continue;
       }
 
-      // Guard sphere check — unchanged from the previous behaviour.
-      if (
-        this.guardPivot &&
-        Vector3.Distance(p.mesh.position, this.guardPivot.position.add(new Vector3(0, 1, 0))) < 1.0
-      ) {
+      // Guard sphere check — first non-KO'd guard the projectile touches stops it.
+      let guardHit: Guard | null = null;
+      for (const g of this.guards) {
+        if (g.knockdown !== null) continue;
+        const chest = g.pivot.position.add(new Vector3(0, 1, 0));
+        if (Vector3.Distance(p.mesh.position, chest) < 1.0) {
+          guardHit = g;
+          break;
+        }
+      }
+      if (guardHit) {
         if (p.weaponIndex !== BAZOOKA_WEAPON_INDEX) {
-          // direct hit — bazooka AoE handles its own push
-          this.guardPivot.position.addInPlace(p.direction.scale(2.0));
-          this.triggerGuardHitReaction();
+          // Direct hit — bazooka AoE handles its own push.
+          guardHit.pivot.position.addInPlace(p.direction.scale(2.0));
+          this.triggerGuardHitReaction(guardHit);
         }
         this.handleProjectileImpact(p, p.mesh.position.clone());
       }
@@ -1273,22 +1279,59 @@ export class GameApp {
 
   private triggerExplosion(center: Vector3): void {
     const centerP = { x: center.x, y: center.y, z: center.z };
-    const guardChest = {
-      x: this.guardPivot.position.x,
-      y: this.guardPivot.position.y + 1,
-      z: this.guardPivot.position.z,
-    };
-    if (distance3(centerP, guardChest) <= BAZOOKA_EXPLOSION_RADIUS) {
-      const push = this.guardPivot.position.subtract(center);
+    for (const guard of this.guards) {
+      if (guard.knockdown !== null) continue;
+      const chest = {
+        x: guard.pivot.position.x,
+        y: guard.pivot.position.y + 1,
+        z: guard.pivot.position.z,
+      };
+      if (distance3(centerP, chest) > BAZOOKA_EXPLOSION_RADIUS) continue;
+      const push = guard.pivot.position.subtract(center);
       push.y = 0;
       if (push.lengthSquared() > 1e-6) {
         push.normalize();
-        this.guardPivot.position.addInPlace(push.scale(2.5));
+        guard.pivot.position.addInPlace(push.scale(2.5));
       }
-      this.triggerGuardHitReaction();
+      this.triggerGuardHitReaction(guard);
     }
     // Larger, orange spark burst for the explosion itself.
     this.spawnSparkBurst(center, new Color3(1.0, 0.55, 0.15), 16, 0.55);
+  }
+
+  /** Nearest non-KO'd guard to the player — used by the sonar display. */
+  private nearestSonarGuard(): Guard | null {
+    let nearest: Guard | null = null;
+    let bestSq = Infinity;
+    for (const guard of this.guards) {
+      if (guard.knockdown !== null) continue;
+      const dx = guard.pivot.position.x - this.playerPivot.position.x;
+      const dz = guard.pivot.position.z - this.playerPivot.position.z;
+      const sq = dx * dx + dz * dz;
+      if (sq < bestSq) {
+        bestSq = sq;
+        nearest = guard;
+      }
+    }
+    return nearest;
+  }
+
+  /** Returns the nearest guard that is not knocked out within `range` metres on the
+   *  XZ plane, or null if none qualify. */
+  private nearestLivingGuardWithin(range: number): Guard | null {
+    let nearest: Guard | null = null;
+    let bestSq = range * range;
+    for (const guard of this.guards) {
+      if (guard.knockdown !== null) continue;
+      const dx = guard.pivot.position.x - this.playerPivot.position.x;
+      const dz = guard.pivot.position.z - this.playerPivot.position.z;
+      const sq = dx * dx + dz * dz;
+      if (sq <= bestSq) {
+        bestSq = sq;
+        nearest = guard;
+      }
+    }
+    return nearest;
   }
 
   private spawnSparkBurst(
@@ -1429,16 +1472,16 @@ export class GameApp {
     }
   }
 
-  /** Called by melee / projectiles / bazooka AoE when they land on the guard.
+  /** Called by melee / projectiles / bazooka AoE when they land on `guard`.
    *  A successful strike is a clean takedown — wake timing scales with difficulty.
    *  No-ops while the guard is already knocked out. */
-  private triggerGuardHitReaction(): void {
-    if (this.guardKnockdown !== null) return;
+  private triggerGuardHitReaction(guard: Guard): void {
+    if (guard.knockdown !== null) return;
 
-    this.guardKnockoutCount += 1;
+    guard.knockoutCount += 1;
     const difficulty = getDifficulty();
     const wake = GUARD_KNOCKOUT_WAKE_SECONDS[difficulty];
-    const drop = this.knockoutDropAmount(this.guardKnockoutCount, difficulty);
+    const drop = this.knockoutDropAmount(guard.knockoutCount, difficulty);
 
     let pendingRescind = 0;
     if (drop > 0) {
@@ -1446,9 +1489,10 @@ export class GameApp {
       if (difficulty === 'hard') pendingRescind = drop;
     }
 
-    this.guardKnockdown = { remainingSeconds: wake, pendingRescind };
+    guard.knockdown = { remainingSeconds: wake, pendingRescind };
+    // One guard going down plays the shared defeated animation; when 6c adds
+    // per-guard animation state this will move onto each guard's own rig.
     this.playGuardAnimationRole('defeated');
-    this.pendingNoise = null;
 
     const permanent = wake === Infinity;
     this.updateStatus(
@@ -1470,19 +1514,19 @@ export class GameApp {
     }
   }
 
-  private wakeGuardFromKnockdown(): void {
-    if (!this.guardKnockdown) return;
+  private wakeGuardFromKnockdown(guard: Guard): void {
+    if (!guard.knockdown) return;
     const difficulty = getDifficulty();
-    const pendingRescind = this.guardKnockdown.pendingRescind;
-    this.guardKnockdown = null;
+    const pendingRescind = guard.knockdown.pendingRescind;
+    guard.knockdown = null;
 
     // Plan Task 4d: a waking guard returns to Suspicious rather than Patrol.
-    this.guardAi = initialGuardAiState('suspicious');
-    this.applyConeColourForState(this.guardAi.state);
+    guard.ai = initialGuardAiState('suspicious');
+    this.applyConeColourForGuard(guard);
 
     if (difficulty === 'hard') {
       if (pendingRescind > 0) spend(pendingRescind);
-      // Actual reinforcement spawns land in Task 6 (multi-guard infrastructure).
+      // Actual reinforcement spawns land in Task 6e (hatch-driven spawning).
       this.updateStatus(
         'Guard woke and radioed for reinforcements!',
         'alert',
@@ -1544,19 +1588,20 @@ export class GameApp {
       tryX = clamp(tryX, -27, 27);
       tryZ = clamp(tryZ, -27, 27);
 
-      // Player-Guard Collision (Capsule-to-Capsule projection on XZ plane)
-      const dx = tryX - this.guardPivot.position.x;
-      const dz = tryZ - this.guardPivot.position.z;
-      const distance = Math.hypot(dx, dz);
+      // Player-Guard Collision (Capsule-to-Capsule on XZ) — resolve against each
+      // guard in turn so the player can't squeeze through a pair of bodies.
       const minDistance = 0.94; // player radius (0.42) + guard radius (0.52)
-      
-      if (distance < minDistance && distance > 0.001) {
-        const overlap = minDistance - distance;
-        tryX += (dx / distance) * overlap;
-        tryZ += (dz / distance) * overlap;
-        
-        tryX = clamp(tryX, -27, 27);
-        tryZ = clamp(tryZ, -27, 27);
+      for (const guard of this.guards) {
+        const dx = tryX - guard.pivot.position.x;
+        const dz = tryZ - guard.pivot.position.z;
+        const distance = Math.hypot(dx, dz);
+        if (distance < minDistance && distance > 0.001) {
+          const overlap = minDistance - distance;
+          tryX += (dx / distance) * overlap;
+          tryZ += (dz / distance) * overlap;
+          tryX = clamp(tryX, -27, 27);
+          tryZ = clamp(tryZ, -27, 27);
+        }
       }
 
       // Environmental Collision
@@ -1612,19 +1657,19 @@ export class GameApp {
   }
 
   private emitNoise(origin: Vector3, radius: number): void {
-    this.pendingNoise = { origin: origin.clone(), radius };
+    this.pendingNoises.push({ origin: origin.clone(), radius });
   }
 
-  private computePlayerVisible(): boolean {
+  private computePlayerVisibleTo(guard: Guard): boolean {
     const guardForward = new Vector3(
-      Math.sin(this.guardPivot.rotation.y),
+      Math.sin(guard.pivot.rotation.y),
       0,
-      Math.cos(this.guardPivot.rotation.y),
+      Math.cos(guard.pivot.rotation.y),
     );
-    const heightDiff = this.playerPivot.position.y - this.guardPivot.position.y;
+    const heightDiff = this.playerPivot.position.y - guard.pivot.position.y;
     const detectionRange = heightDiff > 1.2 ? VISION_RANGE * 0.6 : VISION_RANGE;
     return isTargetVisible({
-      guardPosition: { x: this.guardPivot.position.x, z: this.guardPivot.position.z },
+      guardPosition: { x: guard.pivot.position.x, z: guard.pivot.position.z },
       guardForward: { x: guardForward.x, z: guardForward.z },
       targetPosition: { x: this.playerPivot.position.x, z: this.playerPivot.position.z },
       maxDistance: detectionRange,
@@ -1632,16 +1677,15 @@ export class GameApp {
     });
   }
 
-  private consumePendingNoise(): boolean {
-    if (!this.pendingNoise) return false;
-    const { origin, radius } = this.pendingNoise;
-    this.pendingNoise = null;
-    const dx = this.guardPivot.position.x - origin.x;
-    const dz = this.guardPivot.position.z - origin.z;
-    const planar = Math.hypot(dx, dz);
-    // Hearing is min(guard hearing radius, noise radius) — a loud action still
-    // has to be within earshot, and a quiet action has a short footprint.
-    return planar <= Math.min(GUARD_HEARING_RADIUS, radius);
+  /** True when any queued noise this frame is within `min(hearing radius, noise radius)`
+   *  of the guard. Multiple guards evaluate the same queue independently. */
+  private guardHearsAnyNoise(guard: Guard): boolean {
+    for (const n of this.pendingNoises) {
+      const dx = guard.pivot.position.x - n.origin.x;
+      const dz = guard.pivot.position.z - n.origin.z;
+      if (Math.hypot(dx, dz) <= Math.min(GUARD_HEARING_RADIUS, n.radius)) return true;
+    }
+    return false;
   }
 
   private static readonly CONE_COLOURS: Record<
@@ -1680,43 +1724,43 @@ export class GameApp {
     },
   };
 
-  private applyConeColourForState(state: GuardState): void {
-    const mat = this.visionCone.material as StandardMaterial | null;
+  private applyConeColourForGuard(guard: Guard): void {
+    const mat = guard.visionCone.material as StandardMaterial | null;
     if (!mat) return;
-    const palette = GameApp.CONE_COLOURS[state];
+    const palette = GameApp.CONE_COLOURS[guard.ai.state];
     mat.diffuseColor = palette.diffuse;
     mat.emissiveColor = palette.emissive;
     mat.alpha = palette.alpha;
   }
 
-  /** Walks the guard towards `target` on the XZ plane and returns true when arrived. */
-  private walkGuardToward(target: Vector3, deltaSeconds: number): boolean {
-    const toTarget = target.subtract(this.guardPivot.position);
+  /** Walks `guard` towards `target` on the XZ plane and returns true when arrived. */
+  private walkGuardToward(guard: Guard, target: Vector3, deltaSeconds: number): boolean {
+    const toTarget = target.subtract(guard.pivot.position);
     const planarDistance = Math.hypot(toTarget.x, toTarget.z);
     if (planarDistance < 0.15) return true;
     const direction = new Vector3(toTarget.x, 0, toTarget.z).normalize();
     const displacement = direction.scale(GUARD_SPEED * deltaSeconds);
-    this.guardPivot.position.addInPlace(displacement);
-    this.guardPivot.position.y = this.resolveHeight(this.guardPivot.position);
-    this.guardPivot.rotationQuaternion = null;
-    this.guardPivot.rotation.y = Math.atan2(direction.x, direction.z);
+    guard.pivot.position.addInPlace(displacement);
+    guard.pivot.position.y = this.resolveHeight(guard.pivot.position);
+    guard.pivot.rotationQuaternion = null;
+    guard.pivot.rotation.y = Math.atan2(direction.x, direction.z);
     return false;
   }
 
-  private faceTarget(target: Vector3): void {
-    const dx = target.x - this.guardPivot.position.x;
-    const dz = target.z - this.guardPivot.position.z;
+  private faceTarget(guard: Guard, target: Vector3): void {
+    const dx = target.x - guard.pivot.position.x;
+    const dz = target.z - guard.pivot.position.z;
     if (Math.hypot(dx, dz) < 1e-4) return;
-    this.guardPivot.rotationQuaternion = null;
-    this.guardPivot.rotation.y = Math.atan2(dx, dz);
+    guard.pivot.rotationQuaternion = null;
+    guard.pivot.rotation.y = Math.atan2(dx, dz);
   }
 
-  private distanceToPatrolPath(): number {
+  private distanceToPatrolPath(guard: Guard): number {
     let best = Infinity;
-    for (const p of this.patrolPoints) {
+    for (const p of guard.patrolPoints) {
       const d = Math.hypot(
-        p.x - this.guardPivot.position.x,
-        p.z - this.guardPivot.position.z,
+        p.x - guard.pivot.position.x,
+        p.z - guard.pivot.position.z,
       );
       if (d < best) best = d;
     }
@@ -1726,114 +1770,147 @@ export class GameApp {
   private updateGuard(deltaSeconds: number): void {
     if (this.state.hasLost) {
       this.playGuardAnimationRole('alert');
+      this.pendingNoises.length = 0;
       return;
     }
 
     if (this.state.hasWon) {
       this.playGuardAnimationRole('idle');
+      this.pendingNoises.length = 0;
       return;
     }
 
-    if (this.guardKnockdown !== null) {
-      // Knocked-out guards don't tick AI, don't move, and don't hear anything.
-      this.pendingNoise = null;
-      this.playGuardAnimationRole('defeated');
-      if (Number.isFinite(this.guardKnockdown.remainingSeconds)) {
-        this.guardKnockdown.remainingSeconds -= deltaSeconds;
-        if (this.guardKnockdown.remainingSeconds <= 0) {
-          this.wakeGuardFromKnockdown();
+    // Animation state is still shared — the "loudest" role any active guard wants
+    // wins. Task 6c will give each guard its own rig + animation state.
+    let desiredAnimation: GuardAnimationRole | null = null;
+    const promoteAnim = (role: GuardAnimationRole): void => {
+      if (desiredAnimation === null) {
+        desiredAnimation = role;
+        return;
+      }
+      const priority: Record<GuardAnimationRole, number> = {
+        idle: 0,
+        patrol: 1,
+        alert: 2,
+        hit: 3,
+        defeated: 4,
+      };
+      if (priority[role] > priority[desiredAnimation]) desiredAnimation = role;
+    };
+
+    const difficulty = getDifficulty();
+    let meleeDamagePending = false;
+
+    for (const guard of this.guards) {
+      if (guard.knockdown !== null) {
+        promoteAnim('defeated');
+        if (Number.isFinite(guard.knockdown.remainingSeconds)) {
+          guard.knockdown.remainingSeconds -= deltaSeconds;
+          if (guard.knockdown.remainingSeconds <= 0) {
+            this.wakeGuardFromKnockdown(guard);
+          }
+        }
+        continue;
+      }
+
+      const visible = this.computePlayerVisibleTo(guard);
+      const noiseHeard = this.guardHearsAnyNoise(guard);
+
+      if (visible || noiseHeard) {
+        guard.lastKnownPlayerPosition = this.playerPivot.position.clone();
+      }
+
+      const nearPatrolPath = this.distanceToPatrolPath(guard) < 1.5;
+      let reachedLastKnownPosition = false;
+      if (guard.ai.state === 'investigating' && guard.lastKnownPlayerPosition) {
+        const dx = guard.pivot.position.x - guard.lastKnownPlayerPosition.x;
+        const dz = guard.pivot.position.z - guard.lastKnownPlayerPosition.z;
+        if (Math.hypot(dx, dz) < 0.4) reachedLastKnownPosition = true;
+      }
+
+      const previousState = guard.ai.state;
+      guard.ai = tickGuardAi(guard.ai, {
+        visible,
+        noiseHeard,
+        difficulty,
+        reachedLastKnownPosition,
+        nearPatrolPath,
+        dt: deltaSeconds,
+      });
+
+      if (previousState !== guard.ai.state) {
+        this.applyConeColourForGuard(guard);
+        this.announceGuardStateTransition(previousState, guard.ai.state);
+      }
+
+      // Movement by state.
+      switch (guard.ai.state) {
+        case 'patrol':
+        case 'returning': {
+          const target = guard.patrolPoints[guard.activePatrolIndex];
+          const arrived = this.walkGuardToward(guard, target, deltaSeconds);
+          if (arrived) {
+            promoteAnim('idle');
+            guard.activePatrolIndex = (guard.activePatrolIndex + 1) % guard.patrolPoints.length;
+          } else {
+            promoteAnim('patrol');
+          }
+          break;
+        }
+        case 'suspicious':
+        case 'alerted': {
+          const focus = guard.lastKnownPlayerPosition ?? this.playerPivot.position;
+          this.faceTarget(guard, focus);
+          promoteAnim('alert');
+          break;
+        }
+        case 'investigating': {
+          if (guard.lastKnownPlayerPosition) {
+            this.walkGuardToward(guard, guard.lastKnownPlayerPosition, deltaSeconds);
+          }
+          promoteAnim('patrol');
+          break;
+        }
+        case 'chasing': {
+          this.walkGuardToward(guard, this.playerPivot.position, deltaSeconds);
+          promoteAnim('patrol');
+          break;
         }
       }
-      return;
-    }
 
-    const visible = this.computePlayerVisible();
-    const noiseHeard = this.consumePendingNoise();
+      // Guard-Player Collision (Capsule-to-Capsule projection on XZ plane)
+      const dx = guard.pivot.position.x - this.playerPivot.position.x;
+      const dz = guard.pivot.position.z - this.playerPivot.position.z;
+      const distance = Math.hypot(dx, dz);
+      const minDistance = 0.94;
 
-    if (visible || noiseHeard) {
-      this.lastKnownPlayerPosition = this.playerPivot.position.clone();
-    }
-
-    const nearPatrolPath = this.distanceToPatrolPath() < 1.5;
-    let reachedLastKnownPosition = false;
-    if (this.guardAi.state === 'investigating' && this.lastKnownPlayerPosition) {
-      const dx = this.guardPivot.position.x - this.lastKnownPlayerPosition.x;
-      const dz = this.guardPivot.position.z - this.lastKnownPlayerPosition.z;
-      if (Math.hypot(dx, dz) < 0.4) reachedLastKnownPosition = true;
-    }
-
-    const previousState = this.guardAi.state;
-    this.guardAi = tickGuardAi(this.guardAi, {
-      visible,
-      noiseHeard,
-      difficulty: getDifficulty(),
-      reachedLastKnownPosition,
-      nearPatrolPath,
-      dt: deltaSeconds,
-    });
-
-    if (previousState !== this.guardAi.state) {
-      this.applyConeColourForState(this.guardAi.state);
-      this.announceGuardStateTransition(previousState, this.guardAi.state);
-    }
-
-    // Movement by state.
-    switch (this.guardAi.state) {
-      case 'patrol':
-      case 'returning': {
-        const target = this.patrolPoints[this.activePatrolIndex];
-        const arrived = this.walkGuardToward(target, deltaSeconds);
-        if (arrived) {
-          this.playGuardAnimationRole('idle');
-          this.activePatrolIndex = (this.activePatrolIndex + 1) % this.patrolPoints.length;
-        } else {
-          this.playGuardAnimationRole('patrol');
-        }
-        break;
+      if (distance < minDistance && distance > 0.001) {
+        const overlap = minDistance - distance;
+        guard.pivot.position.x += (dx / distance) * overlap;
+        guard.pivot.position.z += (dz / distance) * overlap;
       }
-      case 'suspicious':
-      case 'alerted': {
-        // Stop in place and face the player / last-known position.
-        const focus = this.lastKnownPlayerPosition ?? this.playerPivot.position;
-        this.faceTarget(focus);
-        this.playGuardAnimationRole('alert');
-        break;
-      }
-      case 'investigating': {
-        if (this.lastKnownPlayerPosition) {
-          this.walkGuardToward(this.lastKnownPlayerPosition, deltaSeconds);
-        }
-        this.playGuardAnimationRole('patrol');
-        break;
-      }
-      case 'chasing': {
-        this.walkGuardToward(this.playerPivot.position, deltaSeconds);
-        this.playGuardAnimationRole('patrol');
-        break;
+
+      // Melee hit: any aggressive guard within catch distance deals damage
+      // during the current i-frame window. Multiple guards in range still
+      // apply a single damage tick — i-frames gate that on the player side.
+      if (
+        (guard.ai.state === 'alerted' || guard.ai.state === 'chasing') &&
+        distance <= GUARD_CATCH_DISTANCE
+      ) {
+        meleeDamagePending = true;
       }
     }
 
-    // Guard-Player Collision (Capsule-to-Capsule projection on XZ plane)
-    const dx = this.guardPivot.position.x - this.playerPivot.position.x;
-    const dz = this.guardPivot.position.z - this.playerPivot.position.z;
-    const distance = Math.hypot(dx, dz);
-    const minDistance = 0.94;
-
-    if (distance < minDistance && distance > 0.001) {
-      const overlap = minDistance - distance;
-      this.guardPivot.position.x += (dx / distance) * overlap;
-      this.guardPivot.position.z += (dz / distance) * overlap;
+    if (desiredAnimation !== null) {
+      this.playGuardAnimationRole(desiredAnimation);
     }
 
-    // Melee hit: an aggressive guard within catch distance deals damage on each
-    // i-frame window. Suspicious/investigating guards do not swing.
-    if (
-      (this.guardAi.state === 'alerted' || this.guardAi.state === 'chasing') &&
-      distance <= GUARD_CATCH_DISTANCE &&
-      this.iFramesRemaining <= 0
-    ) {
-      this.takeDamage(GUARD_MELEE_DAMAGE[getDifficulty()]);
+    if (meleeDamagePending && this.iFramesRemaining <= 0) {
+      this.takeDamage(GUARD_MELEE_DAMAGE[difficulty]);
     }
+
+    // All guards have read this frame's noise queue; discard it.
+    this.pendingNoises.length = 0;
   }
 
   private announceGuardStateTransition(previous: GuardState, next: GuardState): void {
@@ -1869,13 +1946,16 @@ export class GameApp {
    */
   private updateSonar(): void {
     const playerPos = { x: this.playerPivot.position.x, z: this.playerPivot.position.z };
-    const guardPos = { x: this.guardPivot.position.x, z: this.guardPivot.position.z };
+    // Sonar tracks the nearest active guard — knocked-out guards don't radiate
+    // threat, so they're excluded. If none remain, fall back to the last known
+    // patrol position of the first guard so the crest doesn't jerk to the origin.
+    const nearest = this.nearestSonarGuard();
+    const guardPos = nearest
+      ? { x: nearest.pivot.position.x, z: nearest.pivot.position.z }
+      : { x: this.guards[0]?.pivot.position.x ?? 0, z: this.guards[0]?.pivot.position.z ?? 0 };
 
     const dir = soundDirection(playerPos, guardPos);
-    const dist = Math.hypot(
-      this.guardPivot.position.x - this.playerPivot.position.x,
-      this.guardPivot.position.z - this.playerPivot.position.z,
-    );
+    const dist = Math.hypot(guardPos.x - playerPos.x, guardPos.z - playerPos.z);
 
     // Rotate the crest anchor slightly to track threat
     if (dir.x !== 0 || dir.z !== 0) {
@@ -2006,8 +2086,6 @@ export class GameApp {
     this.state.hasLost = false;
     this.state.hasWon = false;
     this.state.liquidTimeSecured = false;
-    this.guardKnockdown = null;
-    this.guardKnockoutCount = 0;
     this.hp = this.character.stats.hp;
     this.iFramesRemaining = 0;
     this.reviveTokenUsed = false;
@@ -2018,13 +2096,14 @@ export class GameApp {
     this.wasAirborne = false;
     this.liquidTimeVial.isVisible = true;
     this.playerPivot.position = new Vector3(-8, 1.2, -8);
-    this.guardPivot.position = this.patrolPoints[0].clone();
-    this.guardPivot.position.y = this.resolveHeight(this.guardPivot.position);
-    this.activePatrolIndex = 1;
-    this.guardAi = initialGuardAiState();
-    this.lastKnownPlayerPosition = null;
-    this.pendingNoise = null;
-    this.applyConeColourForState(this.guardAi.state);
+    this.pendingNoises.length = 0;
+    for (const guard of this.guards) {
+      resetGuard(guard);
+      guard.pivot.position = guard.patrolPoints[0].clone();
+      guard.pivot.position.y = this.resolveHeight(guard.pivot.position);
+      guard.activePatrolIndex = 1 % guard.patrolPoints.length;
+      this.applyConeColourForGuard(guard);
+    }
     this.playGuardAnimationRole('patrol');
     this.updateStatus('Act I \u2014 The Rainy Rooftops. Slip past the Baron\'s guards.', 'neutral');
     this.options.onObjectiveChange('Plant the tracker on the Baron\'s cane. Reach the Liquid Time sample.');
