@@ -57,6 +57,7 @@ appRoot.innerHTML = `
           <li><span>Sprint</span><strong>Shift</strong></li>
           <li><span>Camera</span><strong>Right-drag</strong></li>
           <li><span>Weapon</span><strong>1 - 4</strong></li>
+          <li><span>Medkit</span><strong>H</strong></li>
           <li><span>Pause</span><strong>Esc</strong></li>
           <li><span>Restart</span><strong>R</strong></li>
         </ul>
@@ -72,6 +73,11 @@ appRoot.innerHTML = `
       <div class="card">
         <h2>Health</h2>
         <div id="hp-pips" class="hp-pips"></div>
+        <div class="medkit-counter" id="medkit-counter" aria-label="Medkits">
+          <span class="medkit-icon" aria-hidden="true">+</span>
+          <span id="medkit-held">0</span>
+          <span class="medkit-hint">· Press H</span>
+        </div>
       </div>
       <div class="card">
         <h2>Alarm</h2>
@@ -115,10 +121,34 @@ appRoot.innerHTML = `
       </div>
     </div>
   </div>
+  <div id="shop" class="overlay hidden">
+    <div class="menu-box shop-box">
+      <h2>Field Supplies</h2>
+      <p class="shop-subtitle">Medkits restore HP. Stock resets every run.</p>
+      <div class="shop-item">
+        <div class="shop-item-info">
+          <h3>Medkit</h3>
+          <p class="shop-item-desc">Instant +2 HP. Use with <strong>H</strong> during a run.</p>
+          <p class="shop-item-meta">
+            Price: <strong id="shop-medkit-price">—</strong> ⬢
+            · Remaining this run: <strong id="shop-medkit-remaining">—</strong>
+            · Held: <strong id="shop-medkit-held">—</strong>
+          </p>
+        </div>
+        <button id="btn-shop-buy-medkit" type="button">Buy Medkit</button>
+      </div>
+      <p class="shop-balance">Balance: <strong id="shop-balance">0</strong> ⬢</p>
+      <p id="shop-feedback" class="shop-feedback" aria-live="polite"></p>
+      <div class="shop-actions">
+        <button id="btn-shop-close" type="button">Back to Pause</button>
+      </div>
+    </div>
+  </div>
   <div id="pause-menu" class="overlay hidden">
     <div class="menu-box">
       <h2>Paused</h2>
       <button id="btn-resume">Resume</button>
+      <button id="btn-shop">Shop</button>
       <button id="btn-skill-tree">Skill Tree</button>
       <button id="btn-restart">Restart Level</button>
       <div class="settings">
@@ -195,6 +225,16 @@ const skillTreeDifficultyElement = document.querySelector<HTMLElement>('#skill-t
 const btnSkillTree = document.querySelector<HTMLButtonElement>('#btn-skill-tree');
 const btnSkillRespec = document.querySelector<HTMLButtonElement>('#btn-skill-respec');
 const btnSkillClose = document.querySelector<HTMLButtonElement>('#btn-skill-close');
+const medkitHeldElement = document.querySelector<HTMLSpanElement>('#medkit-held');
+const shopOverlay = document.querySelector<HTMLDivElement>('#shop');
+const shopMedkitPrice = document.querySelector<HTMLElement>('#shop-medkit-price');
+const shopMedkitRemaining = document.querySelector<HTMLElement>('#shop-medkit-remaining');
+const shopMedkitHeld = document.querySelector<HTMLElement>('#shop-medkit-held');
+const shopBalanceElement = document.querySelector<HTMLElement>('#shop-balance');
+const shopFeedbackElement = document.querySelector<HTMLParagraphElement>('#shop-feedback');
+const btnShop = document.querySelector<HTMLButtonElement>('#btn-shop');
+const btnShopBuyMedkit = document.querySelector<HTMLButtonElement>('#btn-shop-buy-medkit');
+const btnShopClose = document.querySelector<HTMLButtonElement>('#btn-shop-close');
 
 if (
   !canvas ||
@@ -221,7 +261,17 @@ if (
   !skillTreeDifficultyElement ||
   !btnSkillTree ||
   !btnSkillRespec ||
-  !btnSkillClose
+  !btnSkillClose ||
+  !medkitHeldElement ||
+  !shopOverlay ||
+  !shopMedkitPrice ||
+  !shopMedkitRemaining ||
+  !shopMedkitHeld ||
+  !shopBalanceElement ||
+  !shopFeedbackElement ||
+  !btnShop ||
+  !btnShopBuyMedkit ||
+  !btnShopClose
 ) {
   throw new Error('Game UI elements not found');
 }
@@ -449,6 +499,43 @@ btnSkillClose!.addEventListener('click', () => {
   pauseMenu!.classList.remove('hidden');
 });
 
+// ---------------------------------------------------------------------------
+// Shop UI (Task 5 consumables)
+// ---------------------------------------------------------------------------
+
+function renderShop(): void {
+  shopMedkitPrice!.textContent = String(game.getMedkitPrice());
+  shopMedkitRemaining!.textContent = String(game.getMedkitsRemaining());
+  shopMedkitHeld!.textContent = String(game.getMedkitsHeld());
+  shopBalanceElement!.textContent = String(getBalance());
+  const canBuy =
+    game.getMedkitsRemaining() > 0 && getBalance() >= game.getMedkitPrice();
+  btnShopBuyMedkit!.disabled = !canBuy;
+  shopFeedbackElement!.textContent = '';
+}
+
+btnShop!.addEventListener('click', () => {
+  pauseMenu!.classList.add('hidden');
+  renderShop();
+  shopOverlay!.classList.remove('hidden');
+});
+
+btnShopClose!.addEventListener('click', () => {
+  shopOverlay!.classList.add('hidden');
+  pauseMenu!.classList.remove('hidden');
+});
+
+btnShopBuyMedkit!.addEventListener('click', () => {
+  if (game.purchaseMedkit()) {
+    shopFeedbackElement!.textContent = 'Medkit purchased.';
+  } else if (game.getMedkitsRemaining() <= 0) {
+    shopFeedbackElement!.textContent = 'Out of stock this run.';
+  } else {
+    shopFeedbackElement!.textContent = 'Not enough coins.';
+  }
+  renderShop();
+});
+
 const ALARM_LABELS = {
   normal: 'Normal',
   caution: 'Caution',
@@ -514,6 +601,9 @@ const game = new GameApp({
   },
   onCurrencyChange: (balance) => {
     currencyAmountElement.textContent = String(balance);
+  },
+  onMedkitsChange: (held) => {
+    medkitHeldElement!.textContent = String(held);
   },
   onAwaitingStart: () => {
     renderCharacterGrid();

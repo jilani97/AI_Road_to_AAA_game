@@ -69,6 +69,12 @@ import {
   type Rng,
 } from './guardPatrol';
 import { getDifficulty } from './difficulty';
+import {
+  MEDKIT_HEAL_AMOUNT,
+  canPurchaseMedkit,
+  medkitPrice,
+  medkitsRemaining,
+} from './consumables';
 import { earn, getBalance, hydrateCurrency, spend } from './currency';
 import type { Difficulty } from './settings';
 
@@ -96,6 +102,10 @@ interface GameAppOptions {
    *  (before the first `startRun`) and on every `reset()`. Main.ts uses this
    *  to show the character-select overlay. */
   onAwaitingStart?: () => void;
+  /** Called whenever medkit inventory or per-run stock changes. `held` is
+   *  what the player currently owns; `remaining` is how many are still
+   *  purchasable this run (stock minus purchased). */
+  onMedkitsChange?: (held: number, remaining: number) => void;
 }
 
 interface InputState {
@@ -317,6 +327,10 @@ export class GameApp {
    *  Easy-tier passive HP regen (plan Task 5). Starts high so a just-booted
    *  Easy run immediately qualifies for regen (it's pre-combat). */
   private timeSinceLastSeen: number = Number.POSITIVE_INFINITY;
+  /** Medkits the player currently holds (unused). Used via the 'H' hotkey. */
+  private medkitsHeld: number = 0;
+  /** Medkits purchased this run — measured against per-difficulty stock cap. */
+  private medkitsPurchasedThisRun: number = 0;
   /** Skills active for the current run (character starting skills + any unlocked via skill tree). */
   private activeRunSkills: readonly string[] = [];
   private reduceMotion: boolean = false;
@@ -401,6 +415,7 @@ export class GameApp {
     this.options.onHealthChange?.(this.hp, this.character.stats.hp);
     this.options.onAlarmChange?.(this.alarm.tier);
     this.options.onCurrencyChange?.(getBalance());
+    this.options.onMedkitsChange?.(this.medkitsHeld, this.getMedkitsRemaining());
     this.options.onAwaitingStart?.();
   }
 
@@ -538,6 +553,58 @@ export class GameApp {
       getDifficulty(),
       this.character.startingSkills,
     );
+  }
+
+  // -------- Consumables (medkits) --------
+
+  public getMedkitsHeld(): number {
+    return this.medkitsHeld;
+  }
+
+  public getMedkitsRemaining(): number {
+    return medkitsRemaining(this.medkitsPurchasedThisRun, getDifficulty());
+  }
+
+  public getMedkitPrice(): number {
+    return medkitPrice(getDifficulty());
+  }
+
+  /** Attempts to buy one medkit. Enforces the per-run stock cap and the
+   *  coin balance check via the pure `canPurchaseMedkit` helper. Returns
+   *  true on success. Fires `onCurrencyChange` + `onMedkitsChange` so HUDs
+   *  stay in sync without the caller having to. */
+  public purchaseMedkit(): boolean {
+    const difficulty = getDifficulty();
+    const blocker = canPurchaseMedkit({
+      purchasedThisRun: this.medkitsPurchasedThisRun,
+      balance: getBalance(),
+      difficulty,
+    });
+    if (blocker !== null) return false;
+    const price = medkitPrice(difficulty);
+    const result = spend(price);
+    if (!result.ok) return false;
+    this.medkitsPurchasedThisRun += 1;
+    this.medkitsHeld += 1;
+    this.options.onCurrencyChange?.(result.balance);
+    this.options.onMedkitsChange?.(this.medkitsHeld, this.getMedkitsRemaining());
+    return true;
+  }
+
+  /** Consumes one held medkit to restore HP. No-ops when at full HP, out of
+   *  medkits, dead, or pre-run. Returns true on success. */
+  public useMedkit(): boolean {
+    if (!this.state.hasStarted) return false;
+    if (this.state.hasLost || this.state.hasWon) return false;
+    if (this.medkitsHeld <= 0) return false;
+    const maxHp = this.character.stats.hp;
+    if (this.hp >= maxHp) return false;
+    this.medkitsHeld -= 1;
+    this.hp = Math.min(maxHp, this.hp + MEDKIT_HEAL_AMOUNT);
+    this.options.onHealthChange?.(this.hp, maxHp);
+    this.options.onMedkitsChange?.(this.medkitsHeld, this.getMedkitsRemaining());
+    this.updateStatus(`+${MEDKIT_HEAL_AMOUNT} HP from medkit`, 'success');
+    return true;
   }
 
   /** True while the character-select overlay should be visible. Main.ts
@@ -1295,6 +1362,10 @@ export class GameApp {
           if (this.state.hasStarted) {
             this.reset();
           }
+          break;
+        case 'KeyH':
+          // Use a medkit. useMedkit() self-gates on hasStarted / hasLost / full HP.
+          this.useMedkit();
           break;
         case 'Digit1':
           this.switchWeapon(0);
@@ -2478,8 +2549,11 @@ export class GameApp {
     this.iFramesRemaining = 0;
     this.reviveTokenUsed = false;
     this.timeSinceLastSeen = Number.POSITIVE_INFINITY;
+    this.medkitsHeld = 0;
+    this.medkitsPurchasedThisRun = 0;
     this.refreshActiveRunSkills();
     this.options.onHealthChange?.(this.hp, this.character.stats.hp);
+    this.options.onMedkitsChange?.(this.medkitsHeld, this.getMedkitsRemaining());
     this.verticalVelocity = 0;
     this.canDoubleJump = false;
     this.wasAirborne = false;
