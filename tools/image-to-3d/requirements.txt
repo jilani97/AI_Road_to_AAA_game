@@ -1,0 +1,28 @@
+# Base requirements for tools/image-to-3d — installed into .venv (Python 3.11).
+#
+# PyTorch CUDA 12.1 wheels come from the PyTorch index below. The driver on
+# the target machine (581.95) supports CUDA 12.1/12.4/12.6; cu121 is the
+# most battle-tested.
+--extra-index-url https://download.pytorch.org/whl/cu121
+
+# Core ML runtime (GPU).
+torch==2.5.1
+torchvision==0.20.1
+
+# HF model hub + transformer backbones (used by TripoSR and Trellis).
+transformers>=4.44.0,<5.0
+huggingface_hub>=0.24.0,<1.0
+
+# Mesh handling + GLB export.
+trimesh>=4.4.0
+
+# Image I/O + preprocessing.
+Pillow>=10.4.0
+numpy>=1.26.0,<2.0  # NumPy 2.x breaks several ML packages; pin to 1.x until stable
+rembg>=2.0.57
+
+# Web UI (Phase 2).
+gradio>=4.44.0,<5.0
+
+# Test runner.
+pytest>=8.3.0

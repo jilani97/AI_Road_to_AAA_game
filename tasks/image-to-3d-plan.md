@@ -28,7 +28,7 @@ Confirmed via `nvidia-smi`:
 - **Single shared filesystem contract:** generated GLBs land in `public/models/generated/`. `public/` is already Vite's static serve root — nothing else needs to change for the game to load them.
 - **Pipeline strategy pattern.** Each pipeline is a subclass of a `Pipeline` ABC with `prepare(image) -> tensor` and `generate(tensor) -> trimesh.Scene`. The UI and CLI pick a pipeline by name and stay ignorant of weights / internals.
 - **Pre-trained weights only.** No training. HuggingFace hub handles the one-time download and local cache (`~/.cache/huggingface/hub/` by default).
-- **Python 3.11 venv, not 3.13.** PyTorch + nvdiffrast + xformers ecosystems still have patchy 3.13 wheels. The probed chocolatey install at `C:\ProgramData\chocolatey\bin\python3.11.exe` is our anchor.
+- **Python 3.12 venv, not 3.13.** PyTorch + nvdiffrast + xformers ecosystems still have patchy 3.13 wheels. Context7 (ComfyUI 3D Pack support matrix) lists Python 3.10 / 3.11 / 3.12 and recommends 3.12 as the Windows happy path. Anchor: `C:\Users\ilham.jillani\AppData\Local\Programs\Python\Python312\python.exe` (Python 3.12.10, python.org installer).
 - **CUDA 12.x PyTorch wheels** via the PyTorch index URL (`cu121` or `cu124`). No user-managed CUDA Toolkit installation needed.
 - **rembg for background removal** — both pipelines expect an RGBA image with the subject isolated. rembg is a small, MIT-licensed runtime that uses ONNX u²net; fits VRAM easily alongside the main models.
 - **Gradio, not a bespoke web UI.** Drag-drop, pipeline picker, progress bar, download all come for free. Listens on localhost only.
@@ -73,7 +73,7 @@ AI_Road_to_AAA_game/
 Phase 0 — Infrastructure (scaffolding + venv + torch+cuda)
     │
     ├── Task 0.1: Folder scaffolding + .gitignore
-    └── Task 0.2: Python 3.11 venv + CUDA 12.x PyTorch + GPU smoke test
+    └── Task 0.2: Python 3.12 venv + CUDA 12.x PyTorch + GPU smoke test
 
 Phase 1 — TripoSR vertical slice (MVP, CLI-only)
     │
@@ -161,9 +161,9 @@ Checkpoint 5: Fresh-clone setup works end-to-end following only the README.
 
 ---
 
-#### Task 0.2: Python 3.11 venv + CUDA 12.x PyTorch + GPU smoke test
+#### Task 0.2: Python 3.12 venv + CUDA 12.x PyTorch + GPU smoke test
 
-**Description:** Create a Python 3.11 virtual environment using the probed `C:\ProgramData\chocolatey\bin\python3.11.exe`. Write `requirements.txt` pinning the base deps: PyTorch with CUDA 12.1 wheels, torchvision, transformers, trimesh, Pillow, numpy, rembg, huggingface_hub, gradio. Document the install command in the README (not a setup script — Windows users benefit from running the commands themselves). Write a one-line smoke test in `convert.py --probe` that prints `torch.__version__`, `torch.cuda.is_available()`, and the GPU name.
+**Description:** Create a Python 3.12 virtual environment using `C:\Users\ilham.jillani\AppData\Local\Programs\Python\Python312\python.exe` (Python 3.12.10). Write `requirements.txt` pinning the base deps: PyTorch with CUDA 12.1 wheels, torchvision, transformers, trimesh, Pillow, numpy, rembg, huggingface_hub, gradio. Document the install command in the README (not a setup script — Windows users benefit from running the commands themselves). Write a one-line smoke test in `convert.py --probe` that prints `torch.__version__`, `torch.cuda.is_available()`, and the GPU name.
 
 **Acceptance criteria:**
 - [ ] `tools/image-to-3d/requirements.txt` pins PyTorch ≥2.4 with `--extra-index-url https://download.pytorch.org/whl/cu121`
@@ -190,7 +190,7 @@ Checkpoint 5: Fresh-clone setup works end-to-end following only the README.
 
 ### Checkpoint 0 (Infrastructure)
 
-- [ ] `tools/image-to-3d/.venv/python --version` prints `Python 3.11.x`
+- [ ] `tools/image-to-3d/.venv/python --version` prints `Python 3.12.x`
 - [ ] `python convert.py --probe` reports CUDA available
 - [ ] Nothing generated or committed that shouldn't be (check `git status`)
 
@@ -559,7 +559,7 @@ This phase carries real risk. 8 GB VRAM is the target hardware's ceiling. If Tre
 
 #### Task 5.1: Full README
 
-**Description:** Consolidate everything into a single README the user (or a future contributor) can follow from zero to first generation: Prerequisites (Python 3.11 location, CUDA driver version, ≥15 GB free disk for weights), install steps (venv, requirements, optional Trellis block), first-run walkthrough (`--probe`, CLI example, Gradio example), architecture diagram (same ASCII as this plan), troubleshooting matrix (OOM, torch CUDA mismatch, nvdiffrast missing, rembg ONNX error, HF cache corruption).
+**Description:** Consolidate everything into a single README the user (or a future contributor) can follow from zero to first generation: Prerequisites (Python 3.12 location, CUDA driver version, ≥15 GB free disk for weights), install steps (venv, requirements, optional Trellis block), first-run walkthrough (`--probe`, CLI example, Gradio example), architecture diagram (same ASCII as this plan), troubleshooting matrix (OOM, torch CUDA mismatch, nvdiffrast missing, rembg ONNX error, HF cache corruption).
 
 **Acceptance criteria:**
 - [ ] Prerequisites explicitly call out the RTX 2000 Ada 8 GB ceiling

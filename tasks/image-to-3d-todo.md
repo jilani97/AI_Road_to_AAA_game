@@ -10,8 +10,8 @@ Ordered checklist for `tools/image-to-3d/`. Full spec in [image-to-3d-plan.md](.
   - Root `.gitignore` appends `public/models/generated/*.glb`
   - `public/models/generated/.gitkeep` committed
   - README stub
-- [ ] **0.2** Python 3.11 venv + CUDA 12.x PyTorch + GPU smoke test
-  - Create venv via `C:\ProgramData\chocolatey\bin\python3.11.exe -m venv .venv`
+- [ ] **0.2** Python 3.12 venv + CUDA 12.x PyTorch + GPU smoke test
+  - Create venv via `C:\Users\ilham.jillani\AppData\Local\Programs\Python\Python312\python.exe -m venv .venv`
   - `requirements.txt` base: `torch`, `torchvision`, `transformers`, `trimesh`, `Pillow`, `numpy`, `rembg`, `huggingface_hub`, `gradio`, `pytest`
   - PyTorch index: `--extra-index-url https://download.pytorch.org/whl/cu121`
   - `python convert.py --probe` prints CUDA + GPU name
@@ -104,7 +104,7 @@ Ordered checklist for `tools/image-to-3d/`. Full spec in [image-to-3d-plan.md](.
 ## Phase 5 — Polish + docs
 
 - [ ] **5.1** Full README
-  - Prerequisites (Python 3.11 path, CUDA driver, disk space)
+  - Prerequisites (Python 3.12 path, CUDA driver, disk space)
   - Quickstart (TripoSR only, ≤ 10 commands)
   - Full setup (Trellis, separate section)
   - Troubleshooting matrix (OOM, CUDA mismatch, nvdiffrast, rembg, HF cache)
