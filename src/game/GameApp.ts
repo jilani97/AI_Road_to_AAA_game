@@ -158,6 +158,27 @@ const ALARM_TIER_LABELS: Record<AlarmTier, string> = {
   evasion: 'Evasion',
 };
 
+/** Authored rooftop hatch positions. Reinforcements emerge from these when the
+ *  alarm hits Alert or Evasion. Y is the rooftop top (matches buildEnvironment). */
+const HATCH_POSITIONS: Vector3[] = [
+  new Vector3(-18, 5.5, 18),
+  new Vector3(18, 7.0, 18),
+  new Vector3(-18, 6.5, -18),
+  new Vector3(18, 4.5, -18),
+];
+
+/** Max total reinforcements (lifetime per run) per difficulty. Plan Task 6
+ *  Q4: Hard scales to genuine chaos. */
+const REINFORCEMENT_CAP: Record<Difficulty, number> = {
+  easy: 0,
+  medium: 2,
+  hard: 4,
+};
+
+/** Half-edge of the square zone a reinforcement patrols around their hatch —
+ *  keeps them from wandering the whole map. */
+const HATCH_ZONE_HALF = 5;
+
 export class GameApp {
   private readonly engine: Engine;
   private readonly scene: Scene;
@@ -195,8 +216,13 @@ export class GameApp {
   /** Glowing cyan ocular implant over the right eye — highlights guard positions. */
   private readonly ocularImplant: Mesh;
   /** All guards on the map. Task 6b introduced the array; 6c spawns N per
-   *  difficulty (Easy 2 / Medium 3 / Hard 5). */
+   *  difficulty (Easy 2 / Medium 3 / Hard 5). 6e appends reinforcements. */
   private readonly guards: Guard[] = [];
+  /** Rooftop hatch meshes authored at fixed positions. Each entry tracks
+   *  whether a reinforcement has already come through it this run. */
+  private readonly hatches: Array<{ mesh: Mesh; position: Vector3; used: boolean }> = [];
+  /** Total reinforcements spawned this run (capped by `REINFORCEMENT_CAP`). */
+  private reinforcementsSpawned = 0;
   /** Seeded RNG driving patrol waypoint picks — fixed per-boot so a given run
    *  is reproducible if the seed is held. Re-seeded on `reset`. */
   private patrolRng: Rng = createRng(0x4e54 /* "NT" */);
@@ -320,6 +346,7 @@ export class GameApp {
     this.ocularImplant.position = new Vector3(-0.27, 0.5, 0.3);
 
     this.seedGuardsForDifficulty();
+    this.placeHatches();
 
     this.liquidTimeVial = this.createLiquidTimeVial();
     this.liquidTimeVial.position = new Vector3(9, 1.2, 8.5);
@@ -931,6 +958,83 @@ export class GameApp {
     for (let i = 0; i < zones.length; i++) {
       this.guards.push(this.spawnGuard(zones[i], i === 0));
     }
+  }
+
+  /** Creates the rooftop hatch meshes at authored positions. Closed state is
+   *  a slightly-emissive grey disc; `flashHatchOpen` briefly brightens it when
+   *  a reinforcement emerges. */
+  private placeHatches(): void {
+    for (let i = 0; i < HATCH_POSITIONS.length; i++) {
+      const origin = HATCH_POSITIONS[i];
+      const mesh = MeshBuilder.CreateCylinder(
+        `hatch_${i}`,
+        { diameter: 1.4, height: 0.18, tessellation: 16 },
+        this.scene,
+      );
+      mesh.position = origin.clone();
+      mesh.position.y += 0.09;
+      const mat = new StandardMaterial(`hatchMat_${i}`, this.scene);
+      mat.diffuseColor = new Color3(0.14, 0.18, 0.22);
+      mat.emissiveColor = new Color3(0.02, 0.04, 0.05);
+      mat.specularColor = new Color3(0.5, 0.6, 0.7);
+      mesh.material = mat;
+      this.hatches.push({ mesh, position: origin.clone(), used: false });
+    }
+  }
+
+  /** Cyan-flash visual on hatch open. Kept briefly bright for ~1 s via a
+   *  timeout; no heavy particle system (Task 7 will hook SFX here). */
+  private flashHatchOpen(hatch: { mesh: Mesh }): void {
+    const mat = hatch.mesh.material as StandardMaterial | null;
+    if (!mat) return;
+    const originalEmissive = mat.emissiveColor.clone();
+    mat.emissiveColor = new Color3(0.1, 0.7, 0.85);
+    setTimeout(() => {
+      mat.emissiveColor = originalEmissive;
+    }, 1000);
+  }
+
+  /** Picks the hatch closest to the player that has not yet been used.
+   *  Returns null when every hatch is used — reinforcement spawn is skipped. */
+  private nearestUnusedHatch(): { mesh: Mesh; position: Vector3; used: boolean } | null {
+    let best: { mesh: Mesh; position: Vector3; used: boolean } | null = null;
+    let bestSq = Infinity;
+    for (const hatch of this.hatches) {
+      if (hatch.used) continue;
+      const dx = hatch.position.x - this.playerPivot.position.x;
+      const dz = hatch.position.z - this.playerPivot.position.z;
+      const sq = dx * dx + dz * dz;
+      if (sq < bestSq) {
+        bestSq = sq;
+        best = hatch;
+      }
+    }
+    return best;
+  }
+
+  /** Spawns one reinforcement through the nearest unused hatch if the per-run
+   *  cap hasn't been reached. Reinforcements get a 10×10 m patrol zone centred
+   *  on their hatch so they stay near their entry point. */
+  private trySpawnReinforcement(): void {
+    if (this.reinforcementsSpawned >= REINFORCEMENT_CAP[getDifficulty()]) return;
+    const hatch = this.nearestUnusedHatch();
+    if (!hatch) return;
+    hatch.used = true;
+    this.reinforcementsSpawned += 1;
+    this.flashHatchOpen(hatch);
+
+    const zone: PatrolZone = {
+      minX: hatch.position.x - HATCH_ZONE_HALF,
+      maxX: hatch.position.x + HATCH_ZONE_HALF,
+      minZ: hatch.position.z - HATCH_ZONE_HALF,
+      maxZ: hatch.position.z + HATCH_ZONE_HALF,
+    };
+    const guard = this.spawnGuard(zone, false);
+    // Plant the guard at the hatch itself, not the zone centre, so the spawn
+    // reads as "emerging from the hatch".
+    guard.pivot.position.set(hatch.position.x, hatch.position.y + 0.2, hatch.position.z);
+    this.guards.push(guard);
+    this.updateStatus('Reinforcement breached the roof!', 'alert');
   }
 
   /** Visible tinted capsule for secondary guards until per-guard animation
@@ -2009,6 +2113,11 @@ export class GameApp {
     if (isTierEscalation(previousTier, this.alarm.tier)) {
       const label = ALARM_TIER_LABELS[this.alarm.tier];
       this.updateStatus(`Alarm: ${label}!`, 'alert');
+      // Every escalation into Alert or Evasion pushes one reinforcement through
+      // a rooftop hatch (capped by REINFORCEMENT_CAP per run per difficulty).
+      if (this.alarm.tier === 'alert' || this.alarm.tier === 'evasion') {
+        this.trySpawnReinforcement();
+      }
     }
   }
 
@@ -2199,6 +2308,16 @@ export class GameApp {
     // Re-seed the RNG so a fresh run picks fresh patrol paths (and tests that
     // depend on a known run still control their own RNG state).
     this.patrolRng = createRng(Date.now() & 0xffffffff);
+    // Dispose reinforcement guards (everything past the starting roster) so a
+    // fresh run starts with just the seeded count.
+    const startingCount = this.guards.length - this.reinforcementsSpawned;
+    for (let i = this.guards.length - 1; i >= startingCount; i--) {
+      const g = this.guards[i];
+      g.visionCone.dispose();
+      g.mesh.dispose();
+      g.pivot.dispose();
+      this.guards.splice(i, 1);
+    }
     for (const guard of this.guards) {
       resetGuard(guard);
       const centre = zoneCentre(guard.zone);
@@ -2207,6 +2326,8 @@ export class GameApp {
       this.regeneratePatrolTarget(guard);
       this.applyConeColourForGuard(guard);
     }
+    for (const hatch of this.hatches) hatch.used = false;
+    this.reinforcementsSpawned = 0;
     this.alarm = initialAlarmState();
     this.options.onAlarmChange?.(this.alarm.tier);
     this.playGuardAnimationRole('patrol');
