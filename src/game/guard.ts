@@ -1,6 +1,10 @@
-import type { Mesh, TransformNode, Vector3 } from '@babylonjs/core';
+import type { AnimationGroup, Mesh, TransformNode, Vector3 } from '@babylonjs/core';
 import { initialGuardAiState, type GuardAiState } from './guardAi';
 import type { PatrolZone } from './guardPatrol';
+
+/** Animation slots each guard's rig supports. Bindings (file → slot) are
+ *  resolved per guard at GLB import time via `findGuardAnimationName`. */
+export type GuardAnimationRole = 'idle' | 'patrol' | 'alert' | 'hit' | 'defeated';
 
 /** Knockout state for a single guard — persists until `remainingSeconds` drains.
  *  `Infinity` means permanent (Easy difficulty). `pendingRescind` holds the coin
@@ -43,6 +47,13 @@ export interface Guard {
   knockdown: GuardKnockdown | null;
   /** How many times this guard has been knocked out this run — feeds coin scaling. */
   knockoutCount: number;
+  /** Animation groups from this guard's Golem GLB — populated asynchronously.
+   *  Empty until the rig finishes importing. */
+  animations: Map<string, AnimationGroup>;
+  /** Resolved name-per-role for this guard's animation groups. */
+  animationBindings: Partial<Record<GuardAnimationRole, string>>;
+  /** Name of the currently-playing animation group, or '' if none. */
+  currentAnimationName: string;
 }
 
 export function createGuard(
@@ -62,6 +73,9 @@ export function createGuard(
     lastKnownPlayerPosition: null,
     knockdown: null,
     knockoutCount: 0,
+    animations: new Map(),
+    animationBindings: {},
+    currentAnimationName: '',
   };
 }
 

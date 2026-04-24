@@ -52,7 +52,13 @@ import {
 } from './alarmState';
 import { shouldDropIntoInvestigating } from './guardComms';
 import { applyPassiveRegen } from './hpRegen';
-import { createGuard, resetGuard, type Guard, type NoiseEvent } from './guard';
+import {
+  createGuard,
+  resetGuard,
+  type Guard,
+  type GuardAnimationRole,
+  type NoiseEvent,
+} from './guard';
 import {
   createRng,
   defaultZonesForDifficulty,
@@ -66,7 +72,6 @@ import { earn, hydrateCurrency, spend } from './currency';
 import type { Difficulty } from './settings';
 
 export type StatusTone = 'neutral' | 'alert' | 'success';
-type GuardAnimationRole = 'idle' | 'patrol' | 'alert' | 'hit' | 'defeated';
 
 interface GameAppOptions {
   canvas: HTMLCanvasElement;
@@ -258,9 +263,6 @@ export class GameApp {
   // Track the animations loaded from the player GLB
   private readonly playerAnimations: Map<string, AnimationGroup> = new Map();
   private currentPlayerAnimation: string = 'Idle';
-  private readonly guardAnimations: Map<string, AnimationGroup> = new Map();
-  private readonly guardAnimationBindings: Partial<Record<GuardAnimationRole, string>> = {};
-  private currentGuardAnimation = '';
 
   private sun!: DirectionalLight;
   private shadowGenerator: ShadowGenerator | null = null;
@@ -540,7 +542,9 @@ export class GameApp {
       return;
     }
     this.state.hasLost = true;
-    this.playGuardAnimationRole('alert');
+    for (const guard of this.guards) {
+      this.playGuardAnimationRole(guard, 'alert');
+    }
     this.updateStatus("Midnight is down. Press R to restart.", 'alert');
   }
 
@@ -938,16 +942,16 @@ export class GameApp {
     return swordRoot;
   }
 
-  /** Builds one guard end-to-end — scene-graph + AI state + zone — and wires
-   *  the cone colour. The `primary` flag loads the full Golem rig (animated);
-   *  placeholder guards get a visible tinted capsule while per-guard animation
-   *  state is a follow-up. */
-  private spawnGuard(zone: PatrolZone, primary: boolean): Guard {
+  /** Builds one guard end-to-end — scene-graph + AI state + zone + async Golem
+   *  rig — and wires the cone colour. Every guard gets its own rig + animation
+   *  state; the GLB import kicks off immediately and populates the guard on
+   *  completion. */
+  private spawnGuard(zone: PatrolZone): Guard {
     const centre = zoneCentre(zone);
     const position = new Vector3(centre.x, 0.75, centre.z);
     const pivot = new TransformNode(`guardPivot_${this.guards.length}`, this.scene);
     pivot.position = position.clone();
-    const mesh = primary ? this.createGuardMesh() : this.createPlaceholderGuardMesh();
+    const mesh = this.createGuardCapsule();
     mesh.parent = pivot;
     const visionCone = this.createVisionCone();
     visionCone.parent = pivot;
@@ -955,15 +959,14 @@ export class GameApp {
     const firstTarget = new Vector3(firstTargetXZ.x, 0.75, firstTargetXZ.z);
     const guard = createGuard(pivot, mesh, visionCone, zone, firstTarget);
     this.applyConeColourForGuard(guard);
+    this.loadGuardRig(guard);
     return guard;
   }
 
-  /** Spawns all starting guards for the current difficulty. First guard gets
-   *  the full Golem rig; additional guards use placeholder capsules. */
   private seedGuardsForDifficulty(): void {
     const zones = defaultZonesForDifficulty(getDifficulty());
-    for (let i = 0; i < zones.length; i++) {
-      this.guards.push(this.spawnGuard(zones[i], i === 0));
+    for (const zone of zones) {
+      this.guards.push(this.spawnGuard(zone));
     }
   }
 
@@ -1036,7 +1039,7 @@ export class GameApp {
       minZ: hatch.position.z - HATCH_ZONE_HALF,
       maxZ: hatch.position.z + HATCH_ZONE_HALF,
     };
-    const guard = this.spawnGuard(zone, false);
+    const guard = this.spawnGuard(zone);
     // Plant the guard at the hatch itself, not the zone centre, so the spawn
     // reads as "emerging from the hatch".
     guard.pivot.position.set(hatch.position.x, hatch.position.y + 0.2, hatch.position.z);
@@ -1044,54 +1047,44 @@ export class GameApp {
     this.updateStatus('Reinforcement breached the roof!', 'alert');
   }
 
-  /** Visible tinted capsule for secondary guards until per-guard animation
-   *  lands. Same hitbox radius as the Golem hitbox so collisions stay honest. */
-  private createPlaceholderGuardMesh(): Mesh {
+  /** Invisible capsule — the guard's true hitbox, collision target, and parent
+   *  for the async-loaded Golem rig. */
+  private createGuardCapsule(): Mesh {
     const capsule = MeshBuilder.CreateCapsule(
-      `guardPlaceholder_${this.guards.length}`,
+      `guardHitbox_${this.guards.length}`,
       { radius: 0.52, height: 1.75 },
       this.scene,
     );
-    const mat = new StandardMaterial(`guardPlaceholderMat_${this.guards.length}`, this.scene);
-    mat.diffuseColor = new Color3(0.28, 0.22, 0.18);
-    mat.emissiveColor = new Color3(0.08, 0.04, 0.02);
-    mat.specularColor = new Color3(0.4, 0.4, 0.45);
-    capsule.material = mat;
+    capsule.isVisible = false;
     return capsule;
   }
 
-  /** Baron von Steer's guard — larger, darker, more threatening. */
-  private createGuardMesh(): Mesh {
-    // Create an invisible dummy base to attach the GLB model
-    const dummyGuard = MeshBuilder.CreateCapsule(
-      'guardHitbox',
-      { radius: 0.52, height: 1.75 },
+  /** Loads the Golem Crystal Behemoth rig for one guard asynchronously, wires
+   *  the returned AnimationGroups into the guard's own maps, binds role slots,
+   *  and kicks off the patrol animation. Each guard's rig is fully independent
+   *  so multi-guard scenes animate correctly. */
+  private loadGuardRig(guard: Guard): void {
+    SceneLoader.ImportMeshAsync(
+      '',
+      '/models/',
+      'Golem Crystal Behemoth.glb',
       this.scene,
-    );
-    dummyGuard.isVisible = false;
-
-    // Load the Golem Crystal Behemoth replacement asynchronously
-    SceneLoader.ImportMeshAsync("", "/models/", "Golem Crystal Behemoth.glb", this.scene).then((result) => {
+    ).then((result) => {
       const golem = result.meshes[0];
-      golem.parent = dummyGuard;
-      // Adjust scale and position based on the Golem model's pivot
-      golem.scaling = new Vector3(1.3, 1.3, 1.3); // Bumped scale up to make it more imposing
-      golem.position.y = 0.3; // Lifted guard up so its feet touch the floor perfectly
-      
-      // Rotate 180 degrees if the model faces backward by default
-      golem.rotation = new Vector3(0, 0, 0); // Removed the Math.PI rotation so it faces forward along its pivot
+      golem.parent = guard.mesh;
+      golem.scaling = new Vector3(1.3, 1.3, 1.3);
+      golem.position.y = 0.3;
+      golem.rotation = new Vector3(0, 0, 0);
 
       if (result.animationGroups && result.animationGroups.length > 0) {
-        result.animationGroups.forEach(anim => {
-          this.guardAnimations.set(anim.name, anim);
+        for (const anim of result.animationGroups) {
+          guard.animations.set(anim.name, anim);
           anim.stop();
-        });
-        this.bindGuardAnimations();
-        this.playGuardAnimationRole('patrol');
+        }
+        this.bindGuardAnimations(guard);
+        this.playGuardAnimationRole(guard, 'patrol');
       }
     });
-
-    return dummyGuard;
   }
 
   private createVisionCone(): Mesh {
@@ -1256,13 +1249,17 @@ export class GameApp {
     if (this.state.isPaused) {
       const currentAnim = this.playerAnimations.get(this.currentPlayerAnimation);
       if (currentAnim) currentAnim.pause();
-      const currentGuardAnim = this.guardAnimations.get(this.currentGuardAnimation);
-      if (currentGuardAnim) currentGuardAnim.pause();
+      for (const guard of this.guards) {
+        const anim = guard.animations.get(guard.currentAnimationName);
+        if (anim) anim.pause();
+      }
     } else {
       const currentAnim = this.playerAnimations.get(this.currentPlayerAnimation);
       if (currentAnim) currentAnim.play(true);
-      const currentGuardAnim = this.guardAnimations.get(this.currentGuardAnimation);
-      if (currentGuardAnim) currentGuardAnim.play(currentGuardAnim.loopAnimation);
+      for (const guard of this.guards) {
+        const anim = guard.animations.get(guard.currentAnimationName);
+        if (anim) anim.play(anim.loopAnimation);
+      }
       // Reset delta time to avoid jumping logic when unpaused
       this.lastFrameTime = performance.now();
     }
@@ -1551,39 +1548,39 @@ export class GameApp {
     }
   }
 
-  private bindGuardAnimations(): void {
-    this.guardAnimationBindings.idle = this.findGuardAnimationName([
+  private bindGuardAnimations(guard: Guard): void {
+    guard.animationBindings.idle = this.findGuardAnimationName(guard, [
       'idle', 'stand', 'breath', 'wait', 'look', 'rest',
     ]);
-    this.guardAnimationBindings.patrol = this.findGuardAnimationName([
+    guard.animationBindings.patrol = this.findGuardAnimationName(guard, [
       'walk', 'run', 'patrol', 'move', 'locomotion', 'stride',
-    ]) ?? this.guardAnimationBindings.idle;
-    this.guardAnimationBindings.alert = this.findGuardAnimationName([
+    ]) ?? guard.animationBindings.idle;
+    guard.animationBindings.alert = this.findGuardAnimationName(guard, [
       'alert', 'attack', 'roar', 'taunt', 'shout', 'scream', 'threat',
-    ]) ?? this.guardAnimationBindings.patrol ?? this.guardAnimationBindings.idle;
-    this.guardAnimationBindings.hit = this.findGuardAnimationName([
+    ]) ?? guard.animationBindings.patrol ?? guard.animationBindings.idle;
+    guard.animationBindings.hit = this.findGuardAnimationName(guard, [
       'hit', 'hurt', 'damage', 'impact', 'stagger', 'flinch', 'react',
     ]);
-    this.guardAnimationBindings.defeated = this.findGuardAnimationName([
+    guard.animationBindings.defeated = this.findGuardAnimationName(guard, [
       'death', 'dead', 'die', 'defeat', 'fall', 'knockout',
     ]);
 
-    if (!this.guardAnimationBindings.idle) {
-      this.guardAnimationBindings.idle = this.guardAnimations.keys().next().value;
+    if (!guard.animationBindings.idle) {
+      guard.animationBindings.idle = guard.animations.keys().next().value;
     }
-    if (!this.guardAnimationBindings.patrol) {
-      this.guardAnimationBindings.patrol = this.guardAnimationBindings.idle;
+    if (!guard.animationBindings.patrol) {
+      guard.animationBindings.patrol = guard.animationBindings.idle;
     }
-    if (!this.guardAnimationBindings.alert) {
-      this.guardAnimationBindings.alert = this.guardAnimationBindings.patrol;
+    if (!guard.animationBindings.alert) {
+      guard.animationBindings.alert = guard.animationBindings.patrol;
     }
   }
 
-  private findGuardAnimationName(candidates: string[]): string | undefined {
+  private findGuardAnimationName(guard: Guard, candidates: string[]): string | undefined {
     let bestName: string | undefined;
     let bestScore = -1;
 
-    for (const name of this.guardAnimations.keys()) {
+    for (const name of guard.animations.keys()) {
       const normalizedName = normalizeAnimationName(name);
       let score = 0;
 
@@ -1610,18 +1607,18 @@ export class GameApp {
     return bestScore > 0 ? bestName : undefined;
   }
 
-  private playGuardAnimationRole(role: GuardAnimationRole): void {
-    const animationName = this.guardAnimationBindings[role];
-    if (!animationName || this.currentGuardAnimation === animationName) {
+  private playGuardAnimationRole(guard: Guard, role: GuardAnimationRole): void {
+    const animationName = guard.animationBindings[role];
+    if (!animationName || guard.currentAnimationName === animationName) {
       return;
     }
 
-    const nextAnimation = this.guardAnimations.get(animationName);
+    const nextAnimation = guard.animations.get(animationName);
     if (!nextAnimation) {
       return;
     }
 
-    const currentAnimation = this.guardAnimations.get(this.currentGuardAnimation);
+    const currentAnimation = guard.animations.get(guard.currentAnimationName);
     if (currentAnimation) {
       currentAnimation.stop();
     }
@@ -1629,16 +1626,16 @@ export class GameApp {
     const shouldLoop = role !== 'hit' && role !== 'defeated';
     nextAnimation.reset();
     nextAnimation.play(shouldLoop);
-    this.currentGuardAnimation = animationName;
+    guard.currentAnimationName = animationName;
 
     if (!shouldLoop) {
       nextAnimation.onAnimationEndObservable.addOnce(() => {
-        if (this.currentGuardAnimation !== animationName) {
+        if (guard.currentAnimationName !== animationName) {
           return;
         }
-        this.currentGuardAnimation = '';
+        guard.currentAnimationName = '';
         if (role === 'hit' && !this.state.hasLost && !this.state.hasWon) {
-          this.playGuardAnimationRole('patrol');
+          this.playGuardAnimationRole(guard, 'patrol');
         }
       });
     }
@@ -1662,9 +1659,7 @@ export class GameApp {
     }
 
     guard.knockdown = { remainingSeconds: wake, pendingRescind };
-    // One guard going down plays the shared defeated animation; when 6c adds
-    // per-guard animation state this will move onto each guard's own rig.
-    this.playGuardAnimationRole('defeated');
+    this.playGuardAnimationRole(guard, 'defeated');
 
     const permanent = wake === Infinity;
     this.updateStatus(
@@ -1944,34 +1939,20 @@ export class GameApp {
 
   private updateGuard(deltaSeconds: number): void {
     if (this.state.hasLost) {
-      this.playGuardAnimationRole('alert');
+      for (const guard of this.guards) {
+        this.playGuardAnimationRole(guard, 'alert');
+      }
       this.pendingNoises.length = 0;
       return;
     }
 
     if (this.state.hasWon) {
-      this.playGuardAnimationRole('idle');
+      for (const guard of this.guards) {
+        this.playGuardAnimationRole(guard, 'idle');
+      }
       this.pendingNoises.length = 0;
       return;
     }
-
-    // Animation state is still shared — the "loudest" role any active guard wants
-    // wins. Task 6c will give each guard its own rig + animation state.
-    let desiredAnimation: GuardAnimationRole | null = null;
-    const promoteAnim = (role: GuardAnimationRole): void => {
-      if (desiredAnimation === null) {
-        desiredAnimation = role;
-        return;
-      }
-      const priority: Record<GuardAnimationRole, number> = {
-        idle: 0,
-        patrol: 1,
-        alert: 2,
-        hit: 3,
-        defeated: 4,
-      };
-      if (priority[role] > priority[desiredAnimation]) desiredAnimation = role;
-    };
 
     const difficulty = getDifficulty();
     let meleeDamagePending = false;
@@ -1979,7 +1960,7 @@ export class GameApp {
 
     for (const guard of this.guards) {
       if (guard.knockdown !== null) {
-        promoteAnim('defeated');
+        this.playGuardAnimationRole(guard, 'defeated');
         if (Number.isFinite(guard.knockdown.remainingSeconds)) {
           guard.knockdown.remainingSeconds -= deltaSeconds;
           if (guard.knockdown.remainingSeconds <= 0) {
@@ -2028,16 +2009,16 @@ export class GameApp {
         }
       }
 
-      // Movement by state.
+      // Movement + per-guard animation by state.
       switch (guard.ai.state) {
         case 'patrol':
         case 'returning': {
           const arrived = this.walkGuardToward(guard, guard.currentPatrolTarget, deltaSeconds);
           if (arrived) {
-            promoteAnim('idle');
+            this.playGuardAnimationRole(guard, 'idle');
             this.regeneratePatrolTarget(guard);
           } else {
-            promoteAnim('patrol');
+            this.playGuardAnimationRole(guard, 'patrol');
           }
           break;
         }
@@ -2045,19 +2026,19 @@ export class GameApp {
         case 'alerted': {
           const focus = guard.lastKnownPlayerPosition ?? this.playerPivot.position;
           this.faceTarget(guard, focus);
-          promoteAnim('alert');
+          this.playGuardAnimationRole(guard, 'alert');
           break;
         }
         case 'investigating': {
           if (guard.lastKnownPlayerPosition) {
             this.walkGuardToward(guard, guard.lastKnownPlayerPosition, deltaSeconds);
           }
-          promoteAnim('patrol');
+          this.playGuardAnimationRole(guard, 'patrol');
           break;
         }
         case 'chasing': {
           this.walkGuardToward(guard, this.playerPivot.position, deltaSeconds);
-          promoteAnim('patrol');
+          this.playGuardAnimationRole(guard, 'patrol');
           break;
         }
       }
@@ -2083,10 +2064,6 @@ export class GameApp {
       ) {
         meleeDamagePending = true;
       }
-    }
-
-    if (desiredAnimation !== null) {
-      this.playGuardAnimationRole(desiredAnimation);
     }
 
     if (meleeDamagePending && this.iFramesRemaining <= 0) {
@@ -2395,7 +2372,9 @@ export class GameApp {
     this.reinforcementsSpawned = 0;
     this.alarm = initialAlarmState();
     this.options.onAlarmChange?.(this.alarm.tier);
-    this.playGuardAnimationRole('patrol');
+    for (const guard of this.guards) {
+      this.playGuardAnimationRole(guard, 'patrol');
+    }
     this.updateStatus('Act I \u2014 The Rainy Rooftops. Slip past the Baron\'s guards.', 'neutral');
     this.options.onObjectiveChange('Plant the tracker on the Baron\'s cane. Reach the Liquid Time sample.');
     this.options.onSonarChange('Scanning\u2026');
