@@ -30,23 +30,11 @@ def load_and_prepare(
     target_size: int = 512,
     remove_background: bool = True,
 ) -> Image.Image:
-    """Load a 2-D image and return a pipeline-ready RGBA square.
+    """Load a 2-D image from disk and return a pipeline-ready RGBA square.
 
-    Steps (all lossless except the final resize):
-      1. Load the source, convert to RGBA.
-      2. (optional) Run rembg to isolate the subject on transparent bg.
-      3. Crop tight around non-transparent pixels.
-      4. Pad with transparency so the canvas is square.
-      5. Resize to ``target_size × target_size`` using Lanczos resampling.
-
-    Arguments:
-      path: path to a JPG, JPEG, PNG, or WEBP file.
-      target_size: side length of the output square. Pipelines pick 256 or 512.
-      remove_background: when False, skip rembg and trust the input's alpha.
-        Useful when the input is already a transparent PNG.
-
-    Returns:
-      A ``PIL.Image.Image`` in ``RGBA`` mode at ``target_size × target_size``.
+    Thin wrapper around ``preprocess_image`` that adds file I/O + extension
+    validation. Used by the CLI; the UI calls ``preprocess_image`` directly
+    on Gradio's uploaded PIL image.
 
     Raises:
       FileNotFoundError: path does not exist.
@@ -61,7 +49,25 @@ def load_and_prepare(
     if not path.exists():
         raise FileNotFoundError(path)
 
-    image = Image.open(path).convert("RGBA")
+    return preprocess_image(Image.open(path), target_size, remove_background)
+
+
+def preprocess_image(
+    image: Image.Image,
+    target_size: int = 512,
+    remove_background: bool = True,
+) -> Image.Image:
+    """Return a pipeline-ready RGBA square from an already-loaded PIL image.
+
+    Steps (all lossless except the final resize):
+      1. Convert to RGBA.
+      2. (optional) Run rembg to isolate the subject on transparent bg.
+      3. Crop tight around non-transparent pixels.
+      4. Pad with transparency so the canvas is square.
+      5. Resize to ``target_size × target_size`` using Lanczos resampling.
+    """
+    if image.mode != "RGBA":
+        image = image.convert("RGBA")
 
     if remove_background:
         image = _remove_background(image)

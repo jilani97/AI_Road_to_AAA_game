@@ -15,6 +15,7 @@ in 2.3; Trellis option in 4.3.
 from __future__ import annotations
 
 import logging
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -29,27 +30,85 @@ PIPELINE_CHOICES: list[tuple[str, str]] = [
 ]
 
 
-def _stub_generate(
+def _generate(
     image: Optional[Image.Image],
     pipeline_name: str,
     remove_background: bool,
+    progress: gr.Progress = gr.Progress(),  # noqa: B008 — Gradio-injected
 ) -> tuple[Optional[str], str, str]:
-    """Task 2.1 placeholder — no model inference yet. Replaced in 2.2."""
-    if image is None:
-        return None, "Drop an image first.", ""
+    """Run the selected pipeline end-to-end on the uploaded image.
 
-    w, h = image.size
-    stub_msg = (
-        f"stub: would run `{pipeline_name}` on a {w}×{h} image "
-        f"(remove_background={remove_background}). "
-        "Real inference wires in at Task 2.2."
+    Returns ``(glb_path, status_text, glb_path_display)`` — Gradio binds
+    them into the Model3D viewer, the status textbox, and the on-disk
+    path textbox respectively. ``glb_path`` doubles as the Model3D
+    source when it's a real filesystem path.
+    """
+    if image is None:
+        raise gr.Error("Drop an image before clicking Generate.")
+    if pipeline_name == "trellis":
+        raise gr.Error(
+            "Trellis is not yet implemented (Phase 4). Use TripoSR for now."
+        )
+    if pipeline_name != "triposr":
+        raise gr.Error(f"Unknown pipeline: {pipeline_name!r}")
+
+    # Deferred imports so boot doesn't pay TripoSR's load-on-first-call cost.
+    from output import (
+        export_scene_to_glb,
+        resolve_output_path,
+        write_sidecar_meta,
     )
-    _LOG.info(stub_msg)
-    return None, stub_msg, ""
+    from pipelines.triposr import TripoSRPipeline
+    from preprocessing import preprocess_image
+
+    start = time.perf_counter()
+
+    try:
+        progress(0.05, desc="Preprocessing image…")
+        preprocessed = preprocess_image(image, remove_background=remove_background)
+
+        progress(0.25, desc="Loading TripoSR + running inference…")
+        pipeline = TripoSRPipeline()
+        scene = pipeline.generate(preprocessed)
+
+        progress(0.85, desc="Exporting GLB + sidecar…")
+        out_path = resolve_output_path("ui")
+        export_scene_to_glb(scene, out_path)
+        meta_path = write_sidecar_meta(
+            out_path,
+            source_image=Path("ui-upload"),
+            pipeline=pipeline_name,
+            scene=scene,
+            extra={
+                "chunk_size": pipeline.chunk_size,
+                "mc_resolution": pipeline.mc_resolution,
+                "device": pipeline.device,
+                "remove_background": remove_background,
+                "input_size": list(image.size),
+            },
+        )
+        progress(1.0, desc="Done")
+    except Exception as exc:
+        _LOG.exception("generation failed")
+        # Gradio's gr.Error surfaces as a toast in the UI.
+        raise gr.Error(f"Generation failed: {exc}") from exc
+
+    elapsed = time.perf_counter() - start
+    tri_count = sum(
+        int(getattr(m, "faces", []).shape[0])
+        for m in scene.geometry.values()
+        if hasattr(m, "faces")
+    )
+    status = (
+        f"OK — {pipeline_name} generated a mesh in {elapsed:.1f} s "
+        f"({tri_count:,} triangles).\nSidecar: {meta_path.name}"
+    )
+    _LOG.info(status.replace("\n", " · "))
+    return str(out_path), status, str(out_path)
 
 
 def build_ui() -> gr.Blocks:
-    with gr.Blocks(title="image-to-3d", theme=gr.themes.Soft()) as demo:
+    with gr.Blocks(title="image-to-3d") as demo:
         gr.Markdown(
             """
             # image-to-3d
@@ -98,7 +157,7 @@ def build_ui() -> gr.Blocks:
                 )
 
         generate_btn.click(
-            fn=_stub_generate,
+            fn=_generate,
             inputs=[image_input, pipeline_radio, remove_bg_checkbox],
             outputs=[model_output, status, path_output],
         )
@@ -120,7 +179,12 @@ def main() -> int:
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
     )
     demo = build_ui()
-    demo.launch(server_name="127.0.0.1", server_port=7860, inbrowser=False)
+    demo.launch(
+        server_name="127.0.0.1",
+        server_port=7860,
+        inbrowser=False,
+        theme=gr.themes.Soft(),
+    )
     return 0
 
 
