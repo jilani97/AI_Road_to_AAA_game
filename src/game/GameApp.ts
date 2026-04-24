@@ -189,6 +189,22 @@ const REINFORCEMENT_CAP: Record<Difficulty, number> = {
  *  keeps them from wandering the whole map. */
 const HATCH_ZONE_HALF = 5;
 
+/** Authored coin pickup positions. Placed on reachable platforms — some
+ *  require the Ascension Dash + double jump to get to, rewarding exploration. */
+const COIN_POSITIONS: readonly Vector3[] = [
+  new Vector3(0, 1.4, 0),         // centralPad
+  new Vector3(6.5, 2.55, -5.5),   // pipePlatform
+  new Vector3(-4.5, 2.55, 0),     // wireBridge centre
+  new Vector3(-14, 3.55, 6),      // b_midWest top
+  new Vector3(14, 4.05, -6),      // b_midEast top
+  new Vector3(-18, 6.0, 18),      // b_northWest top
+  new Vector3(18, 7.5, 18),       // b_northEast top
+  new Vector3(-18, 7.0, -18),     // b_southWest top
+  new Vector3(18, 5.0, -18),      // b_southEast top
+];
+const COIN_PICKUP_RADIUS = 1.4;
+const COIN_VALUE = 10;
+
 export class GameApp {
   private readonly engine: Engine;
   private readonly scene: Scene;
@@ -233,6 +249,8 @@ export class GameApp {
   private readonly hatches: Array<{ mesh: Mesh; position: Vector3; used: boolean }> = [];
   /** Total reinforcements spawned this run (capped by `REINFORCEMENT_CAP`). */
   private reinforcementsSpawned = 0;
+  /** In-world coin pickups. Respawn on `reset()`. */
+  private readonly coins: Array<{ mesh: Mesh; basePosition: Vector3 }> = [];
   /** Seeded RNG driving patrol waypoint picks — fixed per-boot so a given run
    *  is reproducible if the seed is held. Re-seeded on `reset`. */
   private patrolRng: Rng = createRng(0x4e54 /* "NT" */);
@@ -358,6 +376,7 @@ export class GameApp {
 
     this.seedGuardsForDifficulty();
     this.placeHatches();
+    this.placeCoins();
 
     this.liquidTimeVial = this.createLiquidTimeVial();
     this.liquidTimeVial.position = new Vector3(9, 1.2, 8.5);
@@ -996,6 +1015,49 @@ export class GameApp {
     }
   }
 
+  /** Spawns a coin mesh at each authored position. Each coin spins and bobs
+   *  in `updateCoins`; collected coins dispose. Called on boot and on reset. */
+  private placeCoins(): void {
+    for (let i = 0; i < COIN_POSITIONS.length; i++) {
+      const origin = COIN_POSITIONS[i];
+      const mesh = MeshBuilder.CreateSphere(
+        `coin_${i}`,
+        { diameter: 0.38, segments: 10 },
+        this.scene,
+      );
+      mesh.position.copyFrom(origin);
+      const mat = new StandardMaterial(`coinMat_${i}`, this.scene);
+      mat.diffuseColor = new Color3(1.0, 0.82, 0.2);
+      mat.emissiveColor = new Color3(0.95, 0.7, 0.1);
+      mat.specularColor = new Color3(1, 1, 0.8);
+      mesh.material = mat;
+      this.coins.push({ mesh, basePosition: origin.clone() });
+    }
+  }
+
+  /** Animates each coin (slow spin + gentle bob) and collects on player
+   *  proximity. Collection earns `COIN_VALUE` and disposes the mesh. */
+  private updateCoins(deltaSeconds: number): void {
+    if (this.state.hasLost || this.state.hasWon) return;
+    const bobPhase = performance.now() * 0.002;
+    const pickupSq = COIN_PICKUP_RADIUS * COIN_PICKUP_RADIUS;
+    for (let i = this.coins.length - 1; i >= 0; i--) {
+      const coin = this.coins[i];
+      coin.mesh.rotation.y += deltaSeconds * 2.2;
+      coin.mesh.position.y = coin.basePosition.y + Math.sin(bobPhase + i) * 0.12;
+
+      const dx = this.playerPivot.position.x - coin.mesh.position.x;
+      const dy = this.playerPivot.position.y + 0.7 - coin.mesh.position.y;
+      const dz = this.playerPivot.position.z - coin.mesh.position.z;
+      if (dx * dx + dy * dy + dz * dz <= pickupSq) {
+        coin.mesh.dispose();
+        this.coins.splice(i, 1);
+        const nextBalance = earn(COIN_VALUE, 'pickup');
+        this.options.onCurrencyChange?.(nextBalance);
+      }
+    }
+  }
+
   /** Cyan-flash visual on hatch open. Kept briefly bright for ~1 s via a
    *  timeout; no heavy particle system (Task 7 will hook SFX here). */
   private flashHatchOpen(hatch: { mesh: Mesh }): void {
@@ -1276,6 +1338,7 @@ export class GameApp {
     this.updatePlayer(deltaSeconds);
     this.updateGuard(deltaSeconds);
     this.updateLiquidTimeVial(deltaSeconds);
+    this.updateCoins(deltaSeconds);
     this.updateProjectiles(deltaSeconds);
     this.updateSparkBursts(deltaSeconds);
     this.updateSonar();
@@ -2392,6 +2455,9 @@ export class GameApp {
     }
     for (const hatch of this.hatches) hatch.used = false;
     this.reinforcementsSpawned = 0;
+    for (const coin of this.coins) coin.mesh.dispose();
+    this.coins.length = 0;
+    this.placeCoins();
     this.alarm = initialAlarmState();
     this.options.onAlarmChange?.(this.alarm.tier);
     for (const guard of this.guards) {
