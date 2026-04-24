@@ -43,6 +43,14 @@ import {
   type GuardState,
 } from './guardAi';
 import { createGuard, resetGuard, type Guard, type NoiseEvent } from './guard';
+import {
+  createRng,
+  defaultZonesForDifficulty,
+  nextPatrolWaypoint,
+  zoneCentre,
+  type PatrolZone,
+  type Rng,
+} from './guardPatrol';
 import { getDifficulty } from './difficulty';
 import { earn, hydrateCurrency, spend } from './currency';
 import type { Difficulty } from './settings';
@@ -167,8 +175,12 @@ export class GameApp {
   private readonly crestPartRight: Mesh;
   /** Glowing cyan ocular implant over the right eye — highlights guard positions. */
   private readonly ocularImplant: Mesh;
-  /** All guards on the map. Task 6b introduced the array; 6c will grow it past one. */
+  /** All guards on the map. Task 6b introduced the array; 6c spawns N per
+   *  difficulty (Easy 2 / Medium 3 / Hard 5). */
   private readonly guards: Guard[] = [];
+  /** Seeded RNG driving patrol waypoint picks — fixed per-boot so a given run
+   *  is reproducible if the seed is held. Re-seeded on `reset`. */
+  private patrolRng: Rng = createRng(0x4e54 /* "NT" */);
   /** The Liquid Time sample — the MacGuffin of the Chronos Heist. */
   private readonly liquidTimeVial: Mesh;
   private readonly colliders: Array<{ x: number, z: number, w: number, d: number, topY: number, bottomY: number }> = [];
@@ -284,12 +296,7 @@ export class GameApp {
     this.ocularImplant.parent = this.playerPivot;
     this.ocularImplant.position = new Vector3(-0.27, 0.5, 0.3);
 
-    this.guards.push(this.spawnGuard(new Vector3(14, 0.75, 0), [
-      new Vector3(14, 0.75, 0),
-      new Vector3(0, 0.75, 14),
-      new Vector3(-14, 0.75, 0),
-      new Vector3(0, 0.75, -14),
-    ]));
+    this.seedGuardsForDifficulty();
 
     this.liquidTimeVial = this.createLiquidTimeVial();
     this.liquidTimeVial.position = new Vector3(9, 1.2, 8.5);
@@ -873,19 +880,49 @@ export class GameApp {
     return swordRoot;
   }
 
-  /** Builds one full guard — scene-graph + AI state + patrol route — and wires it
-   *  into the shared cone-colour palette. Used by the constructor and (later by
-   *  Task 6c / 6e) by zone seeding and rooftop-hatch reinforcements. */
-  private spawnGuard(position: Vector3, patrolPoints: Vector3[]): Guard {
+  /** Builds one guard end-to-end — scene-graph + AI state + zone — and wires
+   *  the cone colour. The `primary` flag loads the full Golem rig (animated);
+   *  placeholder guards get a visible tinted capsule while per-guard animation
+   *  state is a follow-up. */
+  private spawnGuard(zone: PatrolZone, primary: boolean): Guard {
+    const centre = zoneCentre(zone);
+    const position = new Vector3(centre.x, 0.75, centre.z);
     const pivot = new TransformNode(`guardPivot_${this.guards.length}`, this.scene);
     pivot.position = position.clone();
-    const mesh = this.createGuardMesh();
+    const mesh = primary ? this.createGuardMesh() : this.createPlaceholderGuardMesh();
     mesh.parent = pivot;
     const visionCone = this.createVisionCone();
     visionCone.parent = pivot;
-    const guard = createGuard(pivot, mesh, visionCone, patrolPoints);
+    const firstTargetXZ = nextPatrolWaypoint(centre, zone, this.patrolRng);
+    const firstTarget = new Vector3(firstTargetXZ.x, 0.75, firstTargetXZ.z);
+    const guard = createGuard(pivot, mesh, visionCone, zone, firstTarget);
     this.applyConeColourForGuard(guard);
     return guard;
+  }
+
+  /** Spawns all starting guards for the current difficulty. First guard gets
+   *  the full Golem rig; additional guards use placeholder capsules. */
+  private seedGuardsForDifficulty(): void {
+    const zones = defaultZonesForDifficulty(getDifficulty());
+    for (let i = 0; i < zones.length; i++) {
+      this.guards.push(this.spawnGuard(zones[i], i === 0));
+    }
+  }
+
+  /** Visible tinted capsule for secondary guards until per-guard animation
+   *  lands. Same hitbox radius as the Golem hitbox so collisions stay honest. */
+  private createPlaceholderGuardMesh(): Mesh {
+    const capsule = MeshBuilder.CreateCapsule(
+      `guardPlaceholder_${this.guards.length}`,
+      { radius: 0.52, height: 1.75 },
+      this.scene,
+    );
+    const mat = new StandardMaterial(`guardPlaceholderMat_${this.guards.length}`, this.scene);
+    mat.diffuseColor = new Color3(0.28, 0.22, 0.18);
+    mat.emissiveColor = new Color3(0.08, 0.04, 0.02);
+    mat.specularColor = new Color3(0.4, 0.4, 0.45);
+    capsule.material = mat;
+    return capsule;
   }
 
   /** Baron von Steer's guard — larger, darker, more threatening. */
@@ -1755,16 +1792,19 @@ export class GameApp {
     guard.pivot.rotation.y = Math.atan2(dx, dz);
   }
 
-  private distanceToPatrolPath(guard: Guard): number {
-    let best = Infinity;
-    for (const p of guard.patrolPoints) {
-      const d = Math.hypot(
-        p.x - guard.pivot.position.x,
-        p.z - guard.pivot.position.z,
-      );
-      if (d < best) best = d;
-    }
-    return best;
+  private distanceToPatrolTarget(guard: Guard): number {
+    return Math.hypot(
+      guard.currentPatrolTarget.x - guard.pivot.position.x,
+      guard.currentPatrolTarget.z - guard.pivot.position.z,
+    );
+  }
+
+  /** Picks a fresh semi-random waypoint inside the guard's zone. Used on patrol
+   *  arrival (primary use) and on `reset` to re-seed the route. */
+  private regeneratePatrolTarget(guard: Guard): void {
+    const current = { x: guard.pivot.position.x, z: guard.pivot.position.z };
+    const pick = nextPatrolWaypoint(current, guard.zone, this.patrolRng);
+    guard.currentPatrolTarget = new Vector3(pick.x, guard.pivot.position.y, pick.z);
   }
 
   private updateGuard(deltaSeconds: number): void {
@@ -1820,7 +1860,7 @@ export class GameApp {
         guard.lastKnownPlayerPosition = this.playerPivot.position.clone();
       }
 
-      const nearPatrolPath = this.distanceToPatrolPath(guard) < 1.5;
+      const nearPatrolPath = this.distanceToPatrolTarget(guard) < 1.5;
       let reachedLastKnownPosition = false;
       if (guard.ai.state === 'investigating' && guard.lastKnownPlayerPosition) {
         const dx = guard.pivot.position.x - guard.lastKnownPlayerPosition.x;
@@ -1847,11 +1887,10 @@ export class GameApp {
       switch (guard.ai.state) {
         case 'patrol':
         case 'returning': {
-          const target = guard.patrolPoints[guard.activePatrolIndex];
-          const arrived = this.walkGuardToward(guard, target, deltaSeconds);
+          const arrived = this.walkGuardToward(guard, guard.currentPatrolTarget, deltaSeconds);
           if (arrived) {
             promoteAnim('idle');
-            guard.activePatrolIndex = (guard.activePatrolIndex + 1) % guard.patrolPoints.length;
+            this.regeneratePatrolTarget(guard);
           } else {
             promoteAnim('patrol');
           }
@@ -2097,11 +2136,15 @@ export class GameApp {
     this.liquidTimeVial.isVisible = true;
     this.playerPivot.position = new Vector3(-8, 1.2, -8);
     this.pendingNoises.length = 0;
+    // Re-seed the RNG so a fresh run picks fresh patrol paths (and tests that
+    // depend on a known run still control their own RNG state).
+    this.patrolRng = createRng(Date.now() & 0xffffffff);
     for (const guard of this.guards) {
       resetGuard(guard);
-      guard.pivot.position = guard.patrolPoints[0].clone();
+      const centre = zoneCentre(guard.zone);
+      guard.pivot.position = new Vector3(centre.x, 0.75, centre.z);
       guard.pivot.position.y = this.resolveHeight(guard.pivot.position);
-      guard.activePatrolIndex = 1 % guard.patrolPoints.length;
+      this.regeneratePatrolTarget(guard);
       this.applyConeColourForGuard(guard);
     }
     this.playGuardAnimationRole('patrol');
