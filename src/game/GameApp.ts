@@ -50,6 +50,7 @@ import {
   type AlarmState,
   type AlarmTier,
 } from './alarmState';
+import { shouldDropIntoInvestigating } from './guardComms';
 import { createGuard, resetGuard, type Guard, type NoiseEvent } from './guard';
 import {
   createRng,
@@ -2011,6 +2012,7 @@ export class GameApp {
         this.announceGuardStateTransition(previousState, guard.ai.state);
         if (guard.ai.state === 'alerted' && previousState !== 'chasing') {
           this.alarm = bumpAlarm(this.alarm, 'guard_alerted');
+          this.broadcastAlertToNeighbours(guard);
         } else if (guard.ai.state === 'chasing' && previousState !== 'alerted') {
           // Skipping alerted straight into chasing (rare — integration layer
           // transition edge) still costs full `chasing` pressure.
@@ -2087,6 +2089,34 @@ export class GameApp {
     this.pendingNoises.length = 0;
 
     this.updateAlarm(deltaSeconds);
+  }
+
+  /** Task 4c — propagates an Alerted guard's awareness to neighbours according
+   *  to the per-difficulty comms radius (Easy: isolated, Medium: 10 m shout,
+   *  Hard: full walkie-talkie). Qualifying listeners jump straight into
+   *  `investigating` and inherit the sender's last-known player position. */
+  private broadcastAlertToNeighbours(sender: Guard): void {
+    const lkp = sender.lastKnownPlayerPosition;
+    if (!lkp) return;
+    const difficulty = getDifficulty();
+    for (const other of this.guards) {
+      if (other === sender) continue;
+      const dx = other.pivot.position.x - sender.pivot.position.x;
+      const dz = other.pivot.position.z - sender.pivot.position.z;
+      const distance = Math.hypot(dx, dz);
+      const qualifies = shouldDropIntoInvestigating(
+        {
+          distance,
+          state: other.ai.state,
+          isKnockedOut: other.knockdown !== null,
+        },
+        difficulty,
+      );
+      if (!qualifies) continue;
+      other.ai = initialGuardAiState('investigating');
+      other.lastKnownPlayerPosition = lkp.clone();
+      this.applyConeColourForGuard(other);
+    }
   }
 
   /** Decays the alarm counter when no guard is actively aware of the player,
