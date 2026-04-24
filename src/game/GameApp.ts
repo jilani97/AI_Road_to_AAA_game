@@ -42,6 +42,14 @@ import {
   tickGuardAi,
   type GuardState,
 } from './guardAi';
+import {
+  bumpAlarm,
+  initialAlarmState,
+  isTierEscalation,
+  tickAlarm,
+  type AlarmState,
+  type AlarmTier,
+} from './alarmState';
 import { createGuard, resetGuard, type Guard, type NoiseEvent } from './guard';
 import {
   createRng,
@@ -70,6 +78,9 @@ interface GameAppOptions {
   onHealthChange?: (current: number, max: number) => void;
   /** Called for each damage event — HUD can flash a vignette and shake the canvas. */
   onDamaged?: () => void;
+  /** Called whenever the global alarm tier changes (Normal / Caution / Alert / Evasion).
+   *  Task 7 will consume this to drive the three-layer music crossfade. */
+  onAlarmChange?: (tier: AlarmTier) => void;
 }
 
 interface InputState {
@@ -138,6 +149,14 @@ const NOISE_RADIUS_ATTACK = 8;
 const GUARD_CATCH_DISTANCE = 1.2;
 /** A fall counts as "loud" only when the vertical velocity on landing exceeds this. */
 const LANDING_NOISE_SPEED_THRESHOLD = 6;
+
+/** Human-readable tier labels used in the HUD toast on alarm escalation. */
+const ALARM_TIER_LABELS: Record<AlarmTier, string> = {
+  normal: 'Normal',
+  caution: 'Caution',
+  alert: 'Alert',
+  evasion: 'Evasion',
+};
 
 export class GameApp {
   private readonly engine: Engine;
@@ -225,6 +244,10 @@ export class GameApp {
   /** Noise events queued this frame. Every guard evaluates the list each tick,
    *  then it's cleared. Populated by `emitNoise`; consumed in `updateGuard`. */
   private pendingNoises: NoiseEvent[] = [];
+  /** Global alarm state — counter + tier. Driven by guard state transitions
+   *  (alerted/chasing bumps) and decayed each tick while no guard is aware
+   *  of the player. */
+  private alarm: AlarmState = initialAlarmState();
   private wasAirborne: boolean = false;
   private hp: number = getCharacter(DEFAULT_CHARACTER).stats.hp;
   private iFramesRemaining: number = 0;
@@ -308,6 +331,7 @@ export class GameApp {
     this.options.onObjectiveChange('Plant the tracker on the Baron\'s cane. Reach the Liquid Time sample.');
     this.options.onSonarChange('Scanning\u2026');
     this.options.onHealthChange?.(this.hp, this.character.stats.hp);
+    this.options.onAlarmChange?.(this.alarm.tier);
   }
 
   public start(): void {
@@ -1881,6 +1905,13 @@ export class GameApp {
       if (previousState !== guard.ai.state) {
         this.applyConeColourForGuard(guard);
         this.announceGuardStateTransition(previousState, guard.ai.state);
+        if (guard.ai.state === 'alerted' && previousState !== 'chasing') {
+          this.alarm = bumpAlarm(this.alarm, 'guard_alerted');
+        } else if (guard.ai.state === 'chasing' && previousState !== 'alerted') {
+          // Skipping alerted straight into chasing (rare — integration layer
+          // transition edge) still costs full `chasing` pressure.
+          this.alarm = bumpAlarm(this.alarm, 'guard_chasing');
+        }
       }
 
       // Movement by state.
@@ -1950,6 +1981,35 @@ export class GameApp {
 
     // All guards have read this frame's noise queue; discard it.
     this.pendingNoises.length = 0;
+
+    this.updateAlarm(deltaSeconds);
+  }
+
+  /** Decays the alarm counter when no guard is actively aware of the player,
+   *  and surfaces tier changes. Escalation fires a status toast; decay updates
+   *  the HUD silently so the player can feel it cool off. */
+  private updateAlarm(deltaSeconds: number): void {
+    let anyAware = false;
+    for (const guard of this.guards) {
+      if (guard.knockdown !== null) continue;
+      if (guard.ai.state === 'alerted' || guard.ai.state === 'chasing') {
+        anyAware = true;
+        break;
+      }
+    }
+    const previousTier = this.alarm.tier;
+    this.alarm = tickAlarm(this.alarm, {
+      dt: deltaSeconds,
+      anyGuardAwareOfPlayer: anyAware,
+      difficulty: getDifficulty(),
+    });
+    if (this.alarm.tier === previousTier) return;
+
+    this.options.onAlarmChange?.(this.alarm.tier);
+    if (isTierEscalation(previousTier, this.alarm.tier)) {
+      const label = ALARM_TIER_LABELS[this.alarm.tier];
+      this.updateStatus(`Alarm: ${label}!`, 'alert');
+    }
   }
 
   private announceGuardStateTransition(previous: GuardState, next: GuardState): void {
@@ -2147,6 +2207,8 @@ export class GameApp {
       this.regeneratePatrolTarget(guard);
       this.applyConeColourForGuard(guard);
     }
+    this.alarm = initialAlarmState();
+    this.options.onAlarmChange?.(this.alarm.tier);
     this.playGuardAnimationRole('patrol');
     this.updateStatus('Act I \u2014 The Rainy Rooftops. Slip past the Baron\'s guards.', 'neutral');
     this.options.onObjectiveChange('Plant the tracker on the Baron\'s cane. Reach the Liquid Time sample.');

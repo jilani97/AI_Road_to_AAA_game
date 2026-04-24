@@ -308,6 +308,52 @@ select {
   border-radius: 3px 0 0 3px;
 }
 
+.alarm-tier {
+  display: inline-block;
+  margin-top: 6px;
+  padding: 4px 12px;
+  border-radius: 999px;
+  font-size: 0.85rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(10, 22, 26, 0.7);
+  color: #a6b8c4;
+  transition: background 0.3s ease, color 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease;
+}
+
+.alarm-tier[data-tier='normal'] {
+  border-color: rgba(120, 200, 180, 0.35);
+  color: #8fd1c1;
+}
+
+.alarm-tier[data-tier='caution'] {
+  border-color: rgba(255, 214, 90, 0.55);
+  background: rgba(60, 44, 6, 0.55);
+  color: #ffe07a;
+  box-shadow: 0 0 10px rgba(255, 200, 60, 0.25);
+}
+
+.alarm-tier[data-tier='alert'] {
+  border-color: rgba(255, 130, 40, 0.65);
+  background: rgba(66, 26, 4, 0.6);
+  color: #ffb06b;
+  box-shadow: 0 0 14px rgba(255, 120, 40, 0.35);
+}
+
+.alarm-tier[data-tier='evasion'] {
+  border-color: rgba(255, 70, 60, 0.7);
+  background: rgba(60, 6, 8, 0.7);
+  color: #ff9a8a;
+  box-shadow: 0 0 18px rgba(255, 70, 60, 0.5);
+  animation: alarm-evasion-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes alarm-evasion-pulse {
+  0%, 100% { box-shadow: 0 0 14px rgba(255, 70, 60, 0.4); }
+  50% { box-shadow: 0 0 22px rgba(255, 90, 70, 0.75); }
+}
+
 .damage-vignette {
   pointer-events: none;
   position: fixed;

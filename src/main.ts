@@ -50,6 +50,10 @@ appRoot.innerHTML = `
         <h2>Health</h2>
         <div id="hp-pips" class="hp-pips"></div>
       </div>
+      <div class="card">
+        <h2>Alarm</h2>
+        <div id="alarm-tier" class="alarm-tier" data-tier="normal">Normal</div>
+      </div>
       <div class="card sonar-card">
         <h2>Sonic Crest</h2>
         <p id="sonar-status">Scanning&hellip;</p>
@@ -120,6 +124,7 @@ const pauseMenu = document.querySelector<HTMLDivElement>('#pause-menu');
 const btnResume = document.querySelector<HTMLButtonElement>('#btn-resume');
 const btnRestart = document.querySelector<HTMLButtonElement>('#btn-restart');
 const hpPipsElement = document.querySelector<HTMLDivElement>('#hp-pips');
+const alarmElement = document.querySelector<HTMLDivElement>('#alarm-tier');
 const damageVignette = document.querySelector<HTMLDivElement>('#damage-vignette');
 const shellElement = document.querySelector<HTMLDivElement>('.shell');
 
@@ -133,11 +138,19 @@ if (
   !btnResume ||
   !btnRestart ||
   !hpPipsElement ||
+  !alarmElement ||
   !damageVignette ||
   !shellElement
 ) {
   throw new Error('Game UI elements not found');
 }
+
+const ALARM_LABELS = {
+  normal: 'Normal',
+  caution: 'Caution',
+  alert: 'Alert',
+  evasion: 'Evasion',
+} as const;
 
 function renderHpPips(current: number, max: number): void {
   const doubled = Math.round(current * 2);
@@ -191,6 +204,10 @@ const game = new GameApp({
   },
   onHealthChange: renderHpPips,
   onDamaged: flashDamage,
+  onAlarmChange: (tier) => {
+    alarmElement.textContent = ALARM_LABELS[tier];
+    alarmElement.dataset.tier = tier;
+  },
 });
 
 btnResume.addEventListener('click', () => {
