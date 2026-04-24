@@ -21,8 +21,10 @@ Pillow>=10.4.0
 numpy>=1.26.0,<2.0  # NumPy 2.x breaks several ML packages; pin to 1.x until stable
 rembg>=2.0.57
 
-# Web UI (Phase 2).
-gradio>=4.44.0,<5.0
+# Web UI (Phase 2). Pinned ≥5.0 — Gradio 4.44 had a gradio_client schema
+# incompatibility with Pydantic 2.13 ("argument of type 'bool' is not
+# iterable") and a flaky localhost-reachability check.
+gradio>=5.0
 
 # Test runner.
 pytest>=8.3.0
