@@ -26,3 +26,19 @@ gradio>=4.44.0,<5.0
 
 # Test runner.
 pytest>=8.3.0
+
+# --- TripoSR pipeline (Task 1.2) ---
+# TripoSR upstream lives at https://github.com/VAST-AI-Research/TripoSR and
+# has no setup.py / pyproject.toml, so `pip install git+...` doesn't work.
+# We clone it into `external/TripoSR/` via `python install_triposr.py`
+# and inject the path at import time. These are its transitive runtime deps:
+omegaconf>=2.3.0
+einops>=0.8.0
+xatlas>=0.0.9
+imageio>=2.34.0
+onnxruntime>=1.18.0
+# CPU marching-cubes fallback — avoids the torchmcubes CUDA+MSVC build.
+# PyMCubes exposes `import mcubes`; the pipeline monkey-patches it under
+# the `torchmcubes` name so TripoSR's hard import resolves.
+PyMCubes>=0.1.6
+scikit-image>=0.24.0

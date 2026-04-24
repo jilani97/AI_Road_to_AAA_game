@@ -19,3 +19,6 @@ __pycache__/
 
 # Tool-specific
 # (HuggingFace cache lives under ~/.cache/huggingface, not in-repo)
+
+# Vendored external repos (cloned via install scripts)
+external/
