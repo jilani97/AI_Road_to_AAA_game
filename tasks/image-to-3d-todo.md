@@ -35,19 +35,13 @@ Ordered checklist for `tools/image-to-3d/`. Full spec in [image-to-3d-plan.md](.
 
 ## Phase 2 — Gradio Web UI
 
-- [ ] **2.1** Scaffold (`app.py`)
-  - Gradio Blocks: image upload, radio (triposr/trellis), Generate button, `gr.Model3D` preview, status line
-  - Stubbed generate: echo inputs, no model call
-- [ ] **2.2** Wire TripoSR
-  - Real pipeline call + `gr.Progress()`
-  - Errors caught → `gr.Error` toast, no stack traces
-- [ ] **2.3** Download + save controls
-  - Download GLB button serves file through browser
-  - On-disk path displayed as selectable text
+- [x] **2.1** Scaffold (`app.py`) — Blocks layout, drag-drop image, pipeline radio, bg-removal toggle, Generate button, `gr.Model3D` preview, status + path textboxes. Stubbed handler echoed inputs. **Side effect:** had to bump `gradio` from 4.44 → 6.13 — 4.44 + Pydantic 2.13 hit a `gradio_client` JSON-schema bug and a flaky localhost-reachability check that blocked launch.
+- [x] **2.2** Wire TripoSR — real pipeline call replaces the stub. `gr.Progress()` shows preprocess → load/inference → export → done. Exceptions surface via `raise gr.Error(...)`. `preprocessing.preprocess_image(pil, …)` split out of `load_and_prepare` so the UI can take Gradio's in-memory PIL image without writing to a temp file.
+- [x] **2.3** Download + save controls — `gr.DownloadButton` (hidden until success) serves the GLB through the browser; output-path textbox is plain selectable text alongside the on-disk path.
 
 ### Checkpoint 2 — UI MVP
-- [ ] `python app.py` → localhost:7860 works
-- [ ] Drag-drop → GLB on disk + 3-D preview
+- [x] `python app.py` → localhost:7860 returns HTTP 200
+- [ ] Drag-drop → GLB on disk + 3-D preview (interactive — needs a browser session)
 - [ ] **Human review:** flow feels usable
 
 ## Phase 3 — Game integration
