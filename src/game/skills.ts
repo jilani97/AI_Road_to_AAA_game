@@ -253,3 +253,75 @@ export function addActive(skillId: string, state: SkillTreeState): SkillTreeStat
 export function removeActive(skillId: string, state: SkillTreeState): SkillTreeState {
   return { ...state, active: state.active.filter((id) => id !== skillId) };
 }
+
+// ---------------------------------------------------------------------------
+// Persistence — single source of truth for the player's unlocks + Hard-mode
+// active loadout. Mirrors the currency.ts / difficulty.ts pattern: module-level
+// cached state, hydrate on boot, setSkillState writes through to localStorage.
+// ---------------------------------------------------------------------------
+
+export const SKILLS_STORAGE_KEY = 'neonTail.skills.v1';
+
+let currentSkillState: SkillTreeState = { unlocked: [], active: [] };
+
+function safeGetItem(key: string): string | null {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function safeSetItem(key: string, value: string): void {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // storage unavailable — state stays in-memory for this session
+  }
+}
+
+/** Parses any stored skill state, dropping unknown skill IDs and active
+ *  entries that aren't in the unlocked list. Returns a fresh empty state
+ *  when the payload is missing, corrupt, or storage is denied. */
+export function hydrateSkillState(): SkillTreeState {
+  const raw = safeGetItem(SKILLS_STORAGE_KEY);
+  if (!raw) {
+    currentSkillState = { unlocked: [], active: [] };
+    return currentSkillState;
+  }
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') throw new Error('not object');
+    const rec = parsed as { unlocked?: unknown; active?: unknown };
+    const unlockedRaw = Array.isArray(rec.unlocked) ? rec.unlocked : [];
+    const activeRaw = Array.isArray(rec.active) ? rec.active : [];
+    const unlocked = unlockedRaw.filter(
+      (id: unknown): id is string => typeof id === 'string' && id in SKILLS,
+    );
+    const active = activeRaw.filter(
+      (id: unknown): id is string => typeof id === 'string' && unlocked.includes(id),
+    );
+    currentSkillState = { unlocked, active };
+  } catch {
+    currentSkillState = { unlocked: [], active: [] };
+  }
+  return currentSkillState;
+}
+
+export function getSkillState(): SkillTreeState {
+  return currentSkillState;
+}
+
+/** Writes `state` to the module cache and persists it. The UI calls this
+ *  after every unlock / respec / loadout change. */
+export function setSkillState(state: SkillTreeState): void {
+  currentSkillState = { unlocked: [...state.unlocked], active: [...state.active] };
+  safeSetItem(SKILLS_STORAGE_KEY, JSON.stringify(currentSkillState));
+}
+
+/** Test-only — resets the module cache without touching storage. */
+export function __resetSkillStateForTests(
+  state: SkillTreeState = { unlocked: [], active: [] },
+): void {
+  currentSkillState = { unlocked: [...state.unlocked], active: [...state.active] };
+}

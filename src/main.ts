@@ -1,6 +1,6 @@
 import './style.css';
 import { GameApp } from './game/GameApp';
-import { hydrateDifficulty, setDifficulty } from './game/difficulty';
+import { getDifficulty, hydrateDifficulty, setDifficulty } from './game/difficulty';
 import {
   CHARACTER_ORDER,
   getCharacter,
@@ -9,7 +9,21 @@ import {
   persistCharacter,
   type CharacterId,
 } from './game/characters';
-import { getSkill } from './game/skills';
+import {
+  SKILL_IDS,
+  addActive,
+  canAddActive,
+  canUnlock,
+  getSkill,
+  getSkillState,
+  refundAllSkills,
+  removeActive,
+  setSkillState,
+  unlockSkill,
+  type SkillBranch,
+  type SkillDef,
+} from './game/skills';
+import { earn, getBalance, spend } from './game/currency';
 import {
   loadSettings,
   saveSettings,
@@ -82,10 +96,30 @@ appRoot.innerHTML = `
       <button id="btn-start-run">Start Run</button>
     </div>
   </div>
+  <div id="skill-tree" class="overlay hidden">
+    <div class="menu-box skill-tree-box">
+      <h2>Skill Tree</h2>
+      <div class="skill-tree-meta">
+        <span>Balance: <strong id="skill-tree-balance">0</strong> ⬢</span>
+        <span>Difficulty: <strong id="skill-tree-difficulty">Medium</strong></span>
+      </div>
+      <div id="skill-branches" class="skill-branches"></div>
+      <div id="skill-loadout" class="skill-loadout hidden">
+        <h3>Active Loadout (Hard — max 4)</h3>
+        <p class="skill-loadout-hint">Starting skills are always active on top of your loadout.</p>
+        <div id="skill-loadout-list"></div>
+      </div>
+      <div class="skill-tree-actions">
+        <button id="btn-skill-respec" type="button">Respec (refund all)</button>
+        <button id="btn-skill-close" type="button">Back to Pause</button>
+      </div>
+    </div>
+  </div>
   <div id="pause-menu" class="overlay hidden">
     <div class="menu-box">
       <h2>Paused</h2>
       <button id="btn-resume">Resume</button>
+      <button id="btn-skill-tree">Skill Tree</button>
       <button id="btn-restart">Restart Level</button>
       <div class="settings">
         <h3>Gameplay</h3>
@@ -152,6 +186,15 @@ const shellElement = document.querySelector<HTMLDivElement>('.shell');
 const characterSelectOverlay = document.querySelector<HTMLDivElement>('#character-select');
 const characterGrid = document.querySelector<HTMLDivElement>('#character-grid');
 const btnStartRun = document.querySelector<HTMLButtonElement>('#btn-start-run');
+const skillTreeOverlay = document.querySelector<HTMLDivElement>('#skill-tree');
+const skillBranchesElement = document.querySelector<HTMLDivElement>('#skill-branches');
+const skillLoadoutElement = document.querySelector<HTMLDivElement>('#skill-loadout');
+const skillLoadoutListElement = document.querySelector<HTMLDivElement>('#skill-loadout-list');
+const skillTreeBalanceElement = document.querySelector<HTMLElement>('#skill-tree-balance');
+const skillTreeDifficultyElement = document.querySelector<HTMLElement>('#skill-tree-difficulty');
+const btnSkillTree = document.querySelector<HTMLButtonElement>('#btn-skill-tree');
+const btnSkillRespec = document.querySelector<HTMLButtonElement>('#btn-skill-respec');
+const btnSkillClose = document.querySelector<HTMLButtonElement>('#btn-skill-close');
 
 if (
   !canvas ||
@@ -169,7 +212,16 @@ if (
   !shellElement ||
   !characterSelectOverlay ||
   !characterGrid ||
-  !btnStartRun
+  !btnStartRun ||
+  !skillTreeOverlay ||
+  !skillBranchesElement ||
+  !skillLoadoutElement ||
+  !skillLoadoutListElement ||
+  !skillTreeBalanceElement ||
+  !skillTreeDifficultyElement ||
+  !btnSkillTree ||
+  !btnSkillRespec ||
+  !btnSkillClose
 ) {
   throw new Error('Game UI elements not found');
 }
@@ -229,6 +281,172 @@ characterGrid!.addEventListener('change', (event) => {
   if (target && target.name === 'character' && isCharacterId(target.value)) {
     selectedCharacter = target.value;
   }
+});
+
+// ---------------------------------------------------------------------------
+// Skill tree UI
+// ---------------------------------------------------------------------------
+
+const SKILL_BRANCH_LABELS: Record<SkillBranch, string> = {
+  mobility: 'Mobility',
+  senses: 'Senses',
+  silence: 'Silence',
+  gadgets: 'Gadgets',
+};
+
+const SKILL_BRANCHES_ORDER: SkillBranch[] = ['mobility', 'senses', 'silence', 'gadgets'];
+
+function refreshCurrencyHud(): void {
+  currencyAmountElement!.textContent = String(getBalance());
+}
+
+function classifySkill(
+  skillId: string,
+  state = getSkillState(),
+): 'unlocked' | 'available' | 'locked' | 'unaffordable' {
+  if (state.unlocked.includes(skillId)) return 'unlocked';
+  const reason = canUnlock(skillId, state, getBalance());
+  if (reason === null) return 'available';
+  if (reason === 'insufficient_funds') return 'unaffordable';
+  return 'locked';
+}
+
+function skillCardMarkup(
+  def: SkillDef,
+  status: 'unlocked' | 'available' | 'locked' | 'unaffordable',
+): string {
+  const statusLabel = {
+    unlocked: 'Unlocked',
+    available: `Unlock · ${def.cost} ⬢`,
+    locked: 'Locked (prereq)',
+    unaffordable: `Need ${def.cost} ⬢`,
+  }[status];
+  const tierClass = `skill-card tier-${def.tier} status-${status}`;
+  const buttonAttrs = status === 'available' ? '' : 'disabled';
+  const buttonLabel = status === 'unlocked' ? 'Unlocked' : statusLabel;
+  return `
+    <div class="${tierClass}" data-skill="${def.id}">
+      <div class="skill-card-head">
+        <h4>${escapeHtml(def.name)}</h4>
+        <span class="skill-card-tier">T${def.tier}</span>
+      </div>
+      <p class="skill-card-desc">${escapeHtml(def.description)}</p>
+      <div class="skill-card-footer">
+        <button type="button" class="skill-unlock-btn" data-skill="${def.id}" ${buttonAttrs}>${escapeHtml(buttonLabel)}</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderSkillTree(): void {
+  skillTreeBalanceElement!.textContent = String(getBalance());
+  const difficulty = getDifficulty();
+  skillTreeDifficultyElement!.textContent =
+    difficulty === 'easy' ? 'Easy' : difficulty === 'medium' ? 'Medium' : 'Hard';
+
+  const state = getSkillState();
+  skillBranchesElement!.innerHTML = SKILL_BRANCHES_ORDER.map((branch) => {
+    const defs = SKILL_IDS.map((id) => getSkill(id)).filter(
+      (d): d is SkillDef => !!d && d.branch === branch,
+    );
+    defs.sort((a, b) => a.tier - b.tier);
+    const cards = defs.map((d) => skillCardMarkup(d, classifySkill(d.id, state))).join('');
+    return `
+      <section class="skill-branch" data-branch="${branch}">
+        <h3>${SKILL_BRANCH_LABELS[branch]}</h3>
+        ${cards}
+      </section>
+    `;
+  }).join('');
+
+  if (difficulty === 'hard') {
+    skillLoadoutElement!.classList.remove('hidden');
+    const unlockedDefs = state.unlocked
+      .map((id) => getSkill(id))
+      .filter((d): d is SkillDef => !!d);
+    if (unlockedDefs.length === 0) {
+      skillLoadoutListElement!.innerHTML =
+        '<p class="skill-loadout-empty">Unlock skills first — then pick up to 4 to run.</p>';
+    } else {
+      skillLoadoutListElement!.innerHTML = unlockedDefs
+        .map((d) => {
+          const isActive = state.active.includes(d.id);
+          const canAdd = isActive ? true : canAddActive(d.id, state, 'hard');
+          const disabled = !isActive && !canAdd ? 'disabled' : '';
+          const checked = isActive ? 'checked' : '';
+          return `
+            <label class="skill-loadout-item">
+              <input type="checkbox" data-skill="${d.id}" ${checked} ${disabled}>
+              <span>${escapeHtml(d.name)}</span>
+            </label>
+          `;
+        })
+        .join('');
+    }
+  } else {
+    skillLoadoutElement!.classList.add('hidden');
+  }
+}
+
+skillBranchesElement!.addEventListener('click', (event) => {
+  const target = event.target as HTMLElement | null;
+  if (!target) return;
+  const btn = target.closest<HTMLButtonElement>('.skill-unlock-btn');
+  if (!btn || btn.disabled) return;
+  const skillId = btn.dataset.skill;
+  if (!skillId) return;
+  const state = getSkillState();
+  const result = unlockSkill(skillId, state, getBalance());
+  if (!result.ok) return;
+  const def = getSkill(skillId);
+  if (!def) return;
+  const spendResult = spend(def.cost);
+  if (!spendResult.ok) return;
+  setSkillState(result.state);
+  refreshCurrencyHud();
+  game.refreshActiveRunSkills();
+  renderSkillTree();
+});
+
+skillLoadoutListElement!.addEventListener('change', (event) => {
+  const target = event.target as HTMLInputElement | null;
+  if (!target || target.type !== 'checkbox') return;
+  const skillId = target.dataset.skill;
+  if (!skillId) return;
+  const state = getSkillState();
+  if (target.checked) {
+    if (!canAddActive(skillId, state, 'hard')) {
+      target.checked = false;
+      return;
+    }
+    setSkillState(addActive(skillId, state));
+  } else {
+    setSkillState(removeActive(skillId, state));
+  }
+  game.refreshActiveRunSkills();
+  renderSkillTree();
+});
+
+btnSkillRespec!.addEventListener('click', () => {
+  const { state, refunded } = refundAllSkills(getSkillState());
+  setSkillState(state);
+  if (refunded > 0) {
+    earn(refunded, 'refund');
+    refreshCurrencyHud();
+  }
+  game.refreshActiveRunSkills();
+  renderSkillTree();
+});
+
+btnSkillTree!.addEventListener('click', () => {
+  pauseMenu!.classList.add('hidden');
+  renderSkillTree();
+  skillTreeOverlay!.classList.remove('hidden');
+});
+
+btnSkillClose!.addEventListener('click', () => {
+  skillTreeOverlay!.classList.add('hidden');
+  pauseMenu!.classList.remove('hidden');
 });
 
 const ALARM_LABELS = {
@@ -425,6 +643,8 @@ for (const input of difficultyInputs) {
     const next = input.value as Difficulty;
     settings = { ...settings, difficulty: next };
     setDifficulty(next);
+    // Recompute active skills so the Hard 4-cap engages / disengages on-demand.
+    game.refreshActiveRunSkills();
   });
 }
 

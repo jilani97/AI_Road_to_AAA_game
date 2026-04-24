@@ -305,6 +305,190 @@ select {
   line-height: 1.4;
 }
 
+.skill-tree-box {
+  min-width: 820px;
+  max-width: 1080px;
+  max-height: 86vh;
+  overflow-y: auto;
+  text-align: left;
+}
+
+.skill-tree-box h2 {
+  text-align: center;
+}
+
+.skill-tree-meta {
+  display: flex;
+  justify-content: space-between;
+  margin: 0 0 18px;
+  padding: 8px 14px;
+  background: rgba(10, 22, 30, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  font-size: 0.9rem;
+  color: #c7dbe3;
+}
+
+.skill-tree-meta strong {
+  color: #ffe066;
+  font-variant-numeric: tabular-nums;
+}
+
+.skill-branches {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 14px;
+}
+
+.skill-branch {
+  padding: 12px;
+  border: 1px solid rgba(0, 200, 220, 0.2);
+  border-radius: 10px;
+  background: rgba(5, 15, 22, 0.6);
+}
+
+.skill-branch h3 {
+  margin: 0 0 10px;
+  font-size: 0.95rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #00d4e8;
+}
+
+.skill-card {
+  margin-bottom: 8px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(10, 22, 30, 0.7);
+  transition: border-color 0.18s ease, box-shadow 0.18s ease;
+}
+
+.skill-card.tier-2 {
+  margin-left: 14px;
+}
+
+.skill-card.status-unlocked {
+  border-color: rgba(80, 220, 140, 0.5);
+  box-shadow: inset 0 0 12px rgba(80, 220, 140, 0.08);
+}
+
+.skill-card.status-available {
+  border-color: rgba(0, 210, 230, 0.45);
+}
+
+.skill-card.status-locked,
+.skill-card.status-unaffordable {
+  opacity: 0.55;
+}
+
+.skill-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 4px;
+}
+
+.skill-card-head h4 {
+  margin: 0;
+  font-size: 0.95rem;
+  color: #e8f2ff;
+}
+
+.skill-card-tier {
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  color: #8faebb;
+}
+
+.skill-card-desc {
+  margin: 0 0 8px;
+  font-size: 0.78rem;
+  line-height: 1.35;
+  color: #c7dbe3;
+}
+
+.skill-card-footer {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.skill-unlock-btn {
+  padding: 5px 12px;
+  font-size: 0.78rem;
+  border-radius: 999px;
+  border: 1px solid rgba(0, 200, 220, 0.45);
+  background: rgba(0, 200, 220, 0.12);
+  color: #e8f2ff;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.skill-unlock-btn:hover:not(:disabled) {
+  background: rgba(0, 200, 220, 0.25);
+}
+
+.skill-unlock-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+.skill-card.status-unlocked .skill-unlock-btn {
+  border-color: rgba(80, 220, 140, 0.55);
+  background: rgba(20, 60, 40, 0.4);
+  color: #baf0cf;
+}
+
+.skill-loadout {
+  margin-top: 18px;
+  padding: 14px;
+  border: 1px solid rgba(255, 180, 60, 0.35);
+  background: rgba(30, 20, 6, 0.55);
+  border-radius: 10px;
+}
+
+.skill-loadout h3 {
+  margin: 0 0 6px;
+  font-size: 0.92rem;
+  color: #ffc44d;
+}
+
+.skill-loadout-hint {
+  margin: 0 0 10px;
+  font-size: 0.78rem;
+  color: #c7dbe3;
+}
+
+.skill-loadout-empty {
+  margin: 6px 0;
+  font-size: 0.82rem;
+  color: #8faebb;
+  font-style: italic;
+}
+
+.skill-loadout-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 14px 4px 0;
+  font-size: 0.82rem;
+}
+
+.skill-loadout-item input[type='checkbox']:disabled + span {
+  opacity: 0.4;
+}
+
+.skill-tree-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 18px;
+  justify-content: space-between;
+}
+
+.skill-tree-actions button {
+  flex: 1;
+}
+
 .settings {
   text-align: left;
   margin-top: 24px;

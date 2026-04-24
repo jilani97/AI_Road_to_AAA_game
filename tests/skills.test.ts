@@ -1,19 +1,40 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   ACTIVE_SKILL_CAP_HARD,
   EMPTY_SKILL_STATE,
   SKILLS,
+  SKILLS_STORAGE_KEY,
   SKILL_IDS,
+  __resetSkillStateForTests,
   activeSkillsForRun,
   addActive,
   canAddActive,
   canUnlock,
   getSkill,
+  getSkillState,
+  hydrateSkillState,
   refundAllSkills,
   removeActive,
+  setSkillState,
   skillsByBranch,
   unlockSkill,
 } from '../src/game/skills';
+
+function createMemoryStorage() {
+  const store = new Map<string, string>();
+  return {
+    getItem: (key: string) => store.get(key) ?? null,
+    setItem: (key: string, value: string) => {
+      store.set(key, value);
+    },
+    removeItem: (key: string) => {
+      store.delete(key);
+    },
+    clear: () => {
+      store.clear();
+    },
+  };
+}
 
 describe('skill catalogue', () => {
   it('has at least one skill in each of the four branches', () => {
@@ -180,5 +201,78 @@ describe('Hard-mode active-skill cap', () => {
     const state = { unlocked: baseUnlocks, active: [] };
     expect(canAddActive('senses.extended_sonar', state, 'easy')).toBe(false);
     expect(canAddActive('senses.extended_sonar', state, 'medium')).toBe(false);
+  });
+});
+
+describe('skill state persistence', () => {
+  beforeEach(() => {
+    vi.stubGlobal('localStorage', createMemoryStorage());
+    __resetSkillStateForTests();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('hydrates to an empty state when nothing is stored', () => {
+    expect(hydrateSkillState()).toEqual(EMPTY_SKILL_STATE);
+    expect(getSkillState()).toEqual(EMPTY_SKILL_STATE);
+  });
+
+  it('round-trips a populated state', () => {
+    const input = {
+      unlocked: ['senses.extended_sonar', 'mobility.ascension_dash_plus'],
+      active: ['senses.extended_sonar'],
+    };
+    setSkillState(input);
+    // Fresh hydrate from the same storage should yield the same shape.
+    __resetSkillStateForTests();
+    const hydrated = hydrateSkillState();
+    expect(hydrated.unlocked).toEqual(input.unlocked);
+    expect(hydrated.active).toEqual(input.active);
+  });
+
+  it('drops unknown skill ids from persisted unlocked / active arrays', () => {
+    localStorage.setItem(
+      SKILLS_STORAGE_KEY,
+      JSON.stringify({ unlocked: ['senses.extended_sonar', 'bogus.skill'], active: ['bogus.skill'] }),
+    );
+    const hydrated = hydrateSkillState();
+    expect(hydrated.unlocked).toEqual(['senses.extended_sonar']);
+    expect(hydrated.active).toEqual([]);
+  });
+
+  it('drops active entries that are not in the unlocked list', () => {
+    localStorage.setItem(
+      SKILLS_STORAGE_KEY,
+      JSON.stringify({ unlocked: [], active: ['senses.extended_sonar'] }),
+    );
+    const hydrated = hydrateSkillState();
+    expect(hydrated.active).toEqual([]);
+  });
+
+  it('returns an empty state on corrupt JSON', () => {
+    localStorage.setItem(SKILLS_STORAGE_KEY, '{not json');
+    expect(hydrateSkillState()).toEqual(EMPTY_SKILL_STATE);
+  });
+
+  it('survives a localStorage that throws on access', () => {
+    vi.stubGlobal('localStorage', {
+      getItem: () => {
+        throw new Error('storage denied');
+      },
+      setItem: () => {
+        throw new Error('storage denied');
+      },
+    });
+    expect(hydrateSkillState()).toEqual(EMPTY_SKILL_STATE);
+    expect(() => setSkillState({ unlocked: ['senses.extended_sonar'], active: [] })).not.toThrow();
+  });
+
+  it('setSkillState deep-copies the arrays — later mutations to caller do not leak', () => {
+    const input = { unlocked: ['senses.extended_sonar'], active: [] as string[] };
+    setSkillState(input);
+    input.unlocked.push('mobility.ascension_dash_plus');
+    expect(getSkillState().unlocked).toEqual(['senses.extended_sonar']);
   });
 });

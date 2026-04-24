@@ -52,6 +52,7 @@ import {
 } from './alarmState';
 import { shouldDropIntoInvestigating } from './guardComms';
 import { applyPassiveRegen } from './hpRegen';
+import { activeSkillsForRun, getSkillState, hydrateSkillState } from './skills';
 import {
   createGuard,
   resetGuard,
@@ -391,7 +392,8 @@ export class GameApp {
     this.liquidTimeVial.position = new Vector3(9, 1.2, 8.5);
 
     hydrateCurrency();
-    this.activeRunSkills = this.character.startingSkills.slice();
+    hydrateSkillState();
+    this.refreshActiveRunSkills();
     this.registerInput();
     this.updateStatus('Act I \u2014 The Rainy Rooftops. Slip past the Baron\'s guards.', 'neutral');
     this.options.onObjectiveChange('Plant the tracker on the Baron\'s cane. Reach the Liquid Time sample.');
@@ -509,7 +511,7 @@ export class GameApp {
 
   public setCharacter(id: CharacterId): void {
     this.character = getCharacter(id);
-    this.activeRunSkills = this.character.startingSkills.slice();
+    this.refreshActiveRunSkills();
     this.hp = this.character.stats.hp;
     this.iFramesRemaining = 0;
     this.reviveTokenUsed = false;
@@ -521,8 +523,21 @@ export class GameApp {
    *  confirmed. Safe to call repeatedly — no-ops if already started. */
   public startRun(): void {
     if (this.state.hasStarted) return;
+    this.refreshActiveRunSkills();
     this.state.hasStarted = true;
     this.lastFrameTime = performance.now();
+  }
+
+  /** Recomputes `activeRunSkills` from the persisted skill state, current
+   *  character, and current difficulty. Called on boot, on character change,
+   *  on reset, and on every startRun so the skill-tree UI's unlocks are
+   *  always reflected at the next run. */
+  public refreshActiveRunSkills(): void {
+    this.activeRunSkills = activeSkillsForRun(
+      getSkillState(),
+      getDifficulty(),
+      this.character.startingSkills,
+    );
   }
 
   /** True while the character-select overlay should be visible. Main.ts
@@ -2463,7 +2478,7 @@ export class GameApp {
     this.iFramesRemaining = 0;
     this.reviveTokenUsed = false;
     this.timeSinceLastSeen = Number.POSITIVE_INFINITY;
-    this.activeRunSkills = this.character.startingSkills.slice();
+    this.refreshActiveRunSkills();
     this.options.onHealthChange?.(this.hp, this.character.stats.hp);
     this.verticalVelocity = 0;
     this.canDoubleJump = false;
