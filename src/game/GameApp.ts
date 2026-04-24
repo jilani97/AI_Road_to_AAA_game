@@ -51,6 +51,7 @@ import {
   type AlarmTier,
 } from './alarmState';
 import { shouldDropIntoInvestigating } from './guardComms';
+import { applyPassiveRegen } from './hpRegen';
 import { createGuard, resetGuard, type Guard, type NoiseEvent } from './guard';
 import {
   createRng,
@@ -279,6 +280,10 @@ export class GameApp {
   private hp: number = getCharacter(DEFAULT_CHARACTER).stats.hp;
   private iFramesRemaining: number = 0;
   private reviveTokenUsed: boolean = false;
+  /** Seconds elapsed with no guard having line-of-sight on the player. Drives
+   *  Easy-tier passive HP regen (plan Task 5). Starts high so a just-booted
+   *  Easy run immediately qualifies for regen (it's pre-combat). */
+  private timeSinceLastSeen: number = Number.POSITIVE_INFINITY;
   /** Skills active for the current run (character starting skills + any unlocked via skill tree). */
   private activeRunSkills: readonly string[] = [];
   private reduceMotion: boolean = false;
@@ -473,6 +478,7 @@ export class GameApp {
     this.hp = this.character.stats.hp;
     this.iFramesRemaining = 0;
     this.reviveTokenUsed = false;
+    this.timeSinceLastSeen = Number.POSITIVE_INFINITY;
     this.options.onHealthChange?.(this.hp, this.character.stats.hp);
   }
 
@@ -1969,6 +1975,7 @@ export class GameApp {
 
     const difficulty = getDifficulty();
     let meleeDamagePending = false;
+    let anyGuardSeesPlayer = false;
 
     for (const guard of this.guards) {
       if (guard.knockdown !== null) {
@@ -1983,6 +1990,7 @@ export class GameApp {
       }
 
       const visible = this.computePlayerVisibleTo(guard);
+      if (visible) anyGuardSeesPlayer = true;
       const noiseHeard = this.guardHearsAnyNoise(guard);
 
       if (visible || noiseHeard) {
@@ -2088,7 +2096,33 @@ export class GameApp {
     // All guards have read this frame's noise queue; discard it.
     this.pendingNoises.length = 0;
 
+    if (anyGuardSeesPlayer) {
+      this.timeSinceLastSeen = 0;
+    } else {
+      this.timeSinceLastSeen += deltaSeconds;
+    }
+
     this.updateAlarm(deltaSeconds);
+    this.tickPassiveRegen(deltaSeconds);
+  }
+
+  /** Easy-tier passive regen. Adds HP every frame while the player has been
+   *  unseen for at least 5 s; clamps at the character's max HP. Medium/Hard
+   *  fall through — they rely on consumables (pending Task 13-UI + Task 5
+   *  consumables shop). */
+  private tickPassiveRegen(deltaSeconds: number): void {
+    if (this.state.hasLost || this.state.hasWon) return;
+    const maxHp = this.character.stats.hp;
+    const next = applyPassiveRegen({
+      hp: this.hp,
+      maxHp,
+      timeSinceLastSeen: this.timeSinceLastSeen,
+      difficulty: getDifficulty(),
+      dt: deltaSeconds,
+    });
+    if (next === this.hp) return;
+    this.hp = next;
+    this.options.onHealthChange?.(this.hp, maxHp);
   }
 
   /** Task 4c — propagates an Alerted guard's awareness to neighbours according
@@ -2327,6 +2361,7 @@ export class GameApp {
     this.hp = this.character.stats.hp;
     this.iFramesRemaining = 0;
     this.reviveTokenUsed = false;
+    this.timeSinceLastSeen = Number.POSITIVE_INFINITY;
     this.activeRunSkills = this.character.startingSkills.slice();
     this.options.onHealthChange?.(this.hp, this.character.stats.hp);
     this.verticalVelocity = 0;
