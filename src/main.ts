@@ -54,6 +54,10 @@ appRoot.innerHTML = `
         <h2>Alarm</h2>
         <div id="alarm-tier" class="alarm-tier" data-tier="normal">Normal</div>
       </div>
+      <div class="card">
+        <h2>Coins</h2>
+        <div id="currency" class="currency"><span class="currency-icon" aria-hidden="true">⬢</span><span id="currency-amount">0</span></div>
+      </div>
       <div class="card sonar-card">
         <h2>Sonic Crest</h2>
         <p id="sonar-status">Scanning&hellip;</p>
@@ -125,6 +129,7 @@ const btnResume = document.querySelector<HTMLButtonElement>('#btn-resume');
 const btnRestart = document.querySelector<HTMLButtonElement>('#btn-restart');
 const hpPipsElement = document.querySelector<HTMLDivElement>('#hp-pips');
 const alarmElement = document.querySelector<HTMLDivElement>('#alarm-tier');
+const currencyAmountElement = document.querySelector<HTMLSpanElement>('#currency-amount');
 const damageVignette = document.querySelector<HTMLDivElement>('#damage-vignette');
 const shellElement = document.querySelector<HTMLDivElement>('.shell');
 
@@ -139,6 +144,7 @@ if (
   !btnRestart ||
   !hpPipsElement ||
   !alarmElement ||
+  !currencyAmountElement ||
   !damageVignette ||
   !shellElement
 ) {
@@ -207,6 +213,9 @@ const game = new GameApp({
   onAlarmChange: (tier) => {
     alarmElement.textContent = ALARM_LABELS[tier];
     alarmElement.dataset.tier = tier;
+  },
+  onCurrencyChange: (balance) => {
+    currencyAmountElement.textContent = String(balance);
   },
 });
 

@@ -308,6 +308,28 @@ select {
   border-radius: 3px 0 0 3px;
 }
 
+.currency {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  padding: 4px 12px;
+  border-radius: 999px;
+  font-size: 1.05rem;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em;
+  background: rgba(40, 30, 6, 0.55);
+  border: 1px solid rgba(255, 200, 60, 0.4);
+  color: #ffe07a;
+  box-shadow: 0 0 12px rgba(255, 200, 60, 0.18);
+}
+
+.currency-icon {
+  font-size: 1.1rem;
+  color: #ffd24d;
+  text-shadow: 0 0 6px rgba(255, 200, 60, 0.7);
+}
+
 .alarm-tier {
   display: inline-block;
   margin-top: 6px;

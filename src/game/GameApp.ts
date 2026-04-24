@@ -68,7 +68,7 @@ import {
   type Rng,
 } from './guardPatrol';
 import { getDifficulty } from './difficulty';
-import { earn, hydrateCurrency, spend } from './currency';
+import { earn, getBalance, hydrateCurrency, spend } from './currency';
 import type { Difficulty } from './settings';
 
 export type StatusTone = 'neutral' | 'alert' | 'success';
@@ -88,6 +88,9 @@ interface GameAppOptions {
   /** Called whenever the global alarm tier changes (Normal / Caution / Alert / Evasion).
    *  Task 7 will consume this to drive the three-layer music crossfade. */
   onAlarmChange?: (tier: AlarmTier) => void;
+  /** Called on every balance change (earn / spend / end-of-run). HUD renders
+   *  the coin total; persistence is handled inside `currency.ts`. */
+  onCurrencyChange?: (balance: number) => void;
 }
 
 interface InputState {
@@ -367,6 +370,7 @@ export class GameApp {
     this.options.onSonarChange('Scanning\u2026');
     this.options.onHealthChange?.(this.hp, this.character.stats.hp);
     this.options.onAlarmChange?.(this.alarm.tier);
+    this.options.onCurrencyChange?.(getBalance());
   }
 
   public start(): void {
@@ -1654,7 +1658,8 @@ export class GameApp {
 
     let pendingRescind = 0;
     if (drop > 0) {
-      earn(drop, 'knockout');
+      const nextBalance = earn(drop, 'knockout');
+      this.options.onCurrencyChange?.(nextBalance);
       if (difficulty === 'hard') pendingRescind = drop;
     }
 
@@ -1692,7 +1697,10 @@ export class GameApp {
     this.applyConeColourForGuard(guard);
 
     if (difficulty === 'hard') {
-      if (pendingRescind > 0) spend(pendingRescind);
+      if (pendingRescind > 0) {
+        const result = spend(pendingRescind);
+        this.options.onCurrencyChange?.(result.balance);
+      }
       // Actual reinforcement spawns land in Task 6e (hatch-driven spawning).
       this.updateStatus(
         'Guard woke and radioed for reinforcements!',
@@ -2265,14 +2273,28 @@ export class GameApp {
       this.state.liquidTimeSecured = true;
       this.state.hasWon = true;
       this.liquidTimeVial.isVisible = false;
+      const bonus = this.computeEndOfRunBonus();
+      const nextBalance = earn(bonus, 'end_of_run');
+      this.options.onCurrencyChange?.(nextBalance);
       this.updateStatus(
-        "Liquid Time secured! The Baron never saw it coming. Press R to run again.",
+        `Liquid Time secured! +${bonus} \u2b22 end-of-run bonus. Press R to run again.`,
         'success',
       );
       this.options.onObjectiveChange(
         'The Chronos Heist is a go. Next: Act II \u2014 The Iron Transit.',
       );
     }
+  }
+
+  /** Placeholder end-of-run bonus formula \u2014 a real stealth rating lands with
+   *  Task 10's run timer. For now: 25 base + 10 per still-standing guard +
+   *  25 if the player finished at full HP. Clean, non-bloody runs pay most. */
+  private computeEndOfRunBonus(): number {
+    const base = 25;
+    const standingGuards = this.guards.filter((g) => g.knockdown === null).length;
+    const stealthBonus = standingGuards * 10;
+    const noDamageBonus = this.hp >= this.character.stats.hp ? 25 : 0;
+    return base + stealthBonus + noDamageBonus;
   }
 
   private isWallCollision(x: number, z: number, y: number): boolean {
