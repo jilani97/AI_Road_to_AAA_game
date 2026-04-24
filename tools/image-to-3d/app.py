@@ -35,13 +35,14 @@ def _generate(
     pipeline_name: str,
     remove_background: bool,
     progress: gr.Progress = gr.Progress(),  # noqa: B008 — Gradio-injected
-) -> tuple[Optional[str], str, str]:
+):
     """Run the selected pipeline end-to-end on the uploaded image.
 
-    Returns ``(glb_path, status_text, glb_path_display)`` — Gradio binds
-    them into the Model3D viewer, the status textbox, and the on-disk
-    path textbox respectively. ``glb_path`` doubles as the Model3D
-    source when it's a real filesystem path.
+    Returns ``(glb_path, status_text, glb_path_display, download_update)`` —
+    Gradio binds them into the Model3D viewer, the status textbox, the
+    on-disk path textbox, and the Download button (whose visibility and
+    underlying file are toggled by ``gr.update``). ``glb_path`` doubles
+    as the Model3D source when it's a real filesystem path.
     """
     if image is None:
         raise gr.Error("Drop an image before clicking Generate.")
@@ -104,7 +105,12 @@ def _generate(
         f"({tri_count:,} triangles).\nSidecar: {meta_path.name}"
     )
     _LOG.info(status.replace("\n", " · "))
-    return str(out_path), status, str(out_path)
+    return (
+        str(out_path),
+        status,
+        str(out_path),
+        gr.update(value=str(out_path), visible=True),
+    )
 
 
 def build_ui() -> gr.Blocks:
@@ -151,15 +157,19 @@ def build_ui() -> gr.Blocks:
                     value="Ready.",
                 )
                 path_output = gr.Textbox(
-                    label="Output path",
+                    label="Output path (click to select, Ctrl+C to copy)",
                     interactive=False,
                     placeholder="Will be filled with the GLB path after Generate.",
+                )
+                download_btn = gr.DownloadButton(
+                    label="Download GLB",
+                    visible=False,
                 )
 
         generate_btn.click(
             fn=_generate,
             inputs=[image_input, pipeline_radio, remove_bg_checkbox],
-            outputs=[model_output, status, path_output],
+            outputs=[model_output, status, path_output, download_btn],
         )
 
         gr.Markdown(
