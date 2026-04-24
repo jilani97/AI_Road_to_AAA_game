@@ -16,3 +16,7 @@ pnpm-debug.log*
 
 .DS_Store
 Thumbs.db
+
+# Generated GLBs from tools/image-to-3d/ — keep the directory, skip the artefacts
+public/models/generated/*.glb
+public/models/generated/*.meta.json

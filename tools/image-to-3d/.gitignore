@@ -1,0 +1,21 @@
+# Python venv — recreated per-machine
+.venv/
+venv/
+
+# User-provided reference images (private)
+inputs/
+
+# Local staging outputs — canonical path is public/models/generated/
+outputs/
+
+# Python artefacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Tool-specific
+# (HuggingFace cache lives under ~/.cache/huggingface, not in-repo)
