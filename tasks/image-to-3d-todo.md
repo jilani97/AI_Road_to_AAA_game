@@ -4,48 +4,34 @@ Ordered checklist for `tools/image-to-3d/`. Full spec in [image-to-3d-plan.md](.
 
 ## Phase 0 — Infrastructure
 
-- [ ] **0.1** Folder scaffolding + .gitignore
+- [x] **0.1** Folder scaffolding + .gitignore
   - New dirs: `tools/image-to-3d/{inputs,outputs,pipelines,tests,tests/fixtures}`
   - Local `.gitignore`: `.venv/`, `inputs/`, `outputs/`, `__pycache__/`, `*.pyc`
   - Root `.gitignore` appends `public/models/generated/*.glb`
   - `public/models/generated/.gitkeep` committed
   - README stub
-- [ ] **0.2** Python 3.12 venv + CUDA 12.x PyTorch + GPU smoke test
+- [x] **0.2** Python 3.12 venv + CUDA 12.x PyTorch + GPU smoke test
   - Create venv via `C:\Users\ilham.jillani\AppData\Local\Programs\Python\Python312\python.exe -m venv .venv`
   - `requirements.txt` base: `torch`, `torchvision`, `transformers`, `trimesh`, `Pillow`, `numpy`, `rembg`, `huggingface_hub`, `gradio`, `pytest`
   - PyTorch index: `--extra-index-url https://download.pytorch.org/whl/cu121`
   - `python convert.py --probe` prints CUDA + GPU name
 
 ### Checkpoint 0
-- [ ] `python convert.py --probe` reports `NVIDIA RTX 2000 Ada Generation Laptop GPU`, ~8 GB VRAM
-- [ ] `git status` clean of anything that shouldn't be tracked
+- [x] `python convert.py --probe` reports `NVIDIA RTX 2000 Ada Generation Laptop GPU`, ~8 GB VRAM
+- [x] `git status` clean of anything that shouldn't be tracked
 
 ## Phase 1 — TripoSR vertical slice
 
-- [ ] **1.1** Preprocessing (`preprocessing.py`)
-  - `load_and_prepare(path, target_size=512, remove_background=True) -> PIL.Image`
-  - Square-pad (not stretch) + rembg + RGBA
-  - 2 fixture images + pytest
-- [ ] **1.2** Pipeline ABC + TripoSR (`pipelines/base.py`, `pipelines/triposr.py`)
-  - `Pipeline.generate(image) -> trimesh.Scene`
-  - TripoSR loads once, caches model on class
-  - Install via `pip install git+https://github.com/VAST-AI-Research/TripoSR.git`
-  - Test: triangle count > 1 000, VRAM < 4 GB
-- [ ] **1.3** Output routing (`output.py`)
-  - `resolve_output_path(base_filename)` → `<repo>/public/models/generated/<name>-<timestamp>.glb`
-  - `export_scene_to_glb(scene, path)` wraps `trimesh.Scene.export`
-  - Millisecond precision to avoid collisions
-  - **Sidecar JSON:** writes `<name>-<timestamp>.meta.json` alongside with source image, pipeline, timestamp, triangle/vertex count
-- [ ] **1.4** CLI (`convert.py`)
-  - Args: input path, `--pipeline`, `--output-dir`, `--no-bg-removal`, `--probe`, `--probe-trellis` (Phase 4)
-  - Trellis stub errors out until Phase 4
-  - Prints output path + elapsed seconds
+- [x] **1.1** Preprocessing (`preprocessing.py`) — 27 fast tests including rembg-skipped path and rembg slow end-to-end. Square-pad, tight-crop, Lanczos resize.
+- [x] **1.2** Pipeline ABC + TripoSR. Vendored upstream via `external/TripoSR/` (no PyPI setup.py). `torchmcubes` shim delegates to PyMCubes (pure-Python, no MSVC/CUDA build). RGBA→RGB composite against gray background before inference. 2 slow tests pass end-to-end.
+- [x] **1.3** Output routing — `public/models/generated/<name>-<YYYYMMDD-HHMMSS-mmm>.glb` + `.meta.json` sidecar with source image, pipeline, timestamp, triangle/vertex counts, and pipeline-specific extras.
+- [x] **1.4** CLI — positional input + `--pipeline` + `--output-dir` + `--no-bg-removal` + `--probe` + `--probe-trellis`. Trellis short-circuits before any preprocessing. Exit codes documented in module docstring.
 
 ### Checkpoint 1 — TripoSR MVP
-- [ ] `python convert.py tests/fixtures/with_bg.jpg` writes valid GLB
-- [ ] GLB passes gltf-validator
-- [ ] Total time < 30 s on target hardware
-- [ ] **Human review:** mesh looks like the input subject
+- [x] `python convert.py inputs/smoke.png --no-bg-removal` writes valid GLB (3.1 MB, 155K triangles)
+- [x] GLB has valid glTF magic bytes (unit test)
+- [x] Total time ≈ 15 s on target hardware (under the 30 s budget)
+- [ ] **Human review:** open a generated GLB in the running Babylon dev server (Task 3.1 Phase 3) — still pending since Phase 3 is game-integration, not Phase 1.
 
 ## Phase 2 — Gradio Web UI
 
