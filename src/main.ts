@@ -43,11 +43,55 @@ if (!appRoot) {
 
 appRoot.innerHTML = `
   <div class="shell">
-    <canvas id="game-canvas"></canvas>
+    <div class="canvas-area">
+      <canvas id="game-canvas"></canvas>
+      <div class="game-hud" aria-hidden="false">
+        <div class="game-hud-corner top-left">
+          <div class="game-hud-pill" aria-label="Alarm tier">
+            <span class="game-hud-pill-label">Alarm</span>
+            <span id="alarm-tier" class="alarm-tier" data-tier="normal">Normal</span>
+          </div>
+        </div>
+        <div class="game-hud-corner top-right">
+          <div class="game-hud-pill sonar-pill" aria-label="Sonic Crest">
+            <span class="game-hud-pill-label">Sonic Crest</span>
+            <span id="sonar-status" class="sonar-readout">Scanning&hellip;</span>
+          </div>
+        </div>
+        <div class="game-hud-corner bottom-left">
+          <div class="game-hud-stack">
+            <div class="game-hud-pill health-pill" aria-label="Health">
+              <div id="hp-pips" class="hp-pips"></div>
+            </div>
+            <div class="medkit-counter" id="medkit-counter" aria-label="Medkits">
+              <span class="medkit-icon" aria-hidden="true">+</span>
+              <span id="medkit-held">0</span>
+              <span class="medkit-hint">· Press H</span>
+            </div>
+          </div>
+        </div>
+        <div class="game-hud-corner bottom-right">
+          <div class="game-hud-stack">
+            <div id="currency" class="currency">
+              <span class="currency-icon" aria-hidden="true">⬢</span>
+              <span id="currency-amount">0</span>
+            </div>
+            <div class="game-hud-pill loadout-pill" aria-label="Loadout">
+              <span class="game-hud-pill-label">Loadout</span>
+              <span id="weapon-status" class="loadout-readout">Sting Sword</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
     <aside class="hud">
       <h1>Neon Tail</h1>
       <p class="subtitle">The Midnight Syndicate</p>
       <div id="status" class="card">Act I — The Rainy Rooftops. Slip past the Baron's guards.</div>
+      <div class="card">
+        <h2>Objective</h2>
+        <p id="objective">Plant the tracker on the Baron's cane. Reach the Liquid Time sample.</p>
+      </div>
       <div class="card">
         <h2>Controls</h2>
         <ul>
@@ -61,35 +105,6 @@ appRoot.innerHTML = `
           <li><span>Pause</span><strong>Esc</strong></li>
           <li><span>Restart</span><strong>R</strong></li>
         </ul>
-      </div>
-      <div class="card">
-        <h2>Loadout</h2>
-        <p id="weapon-status">Equipped: Sword</p>
-      </div>
-      <div class="card">
-        <h2>Objective</h2>
-        <p id="objective">Plant the tracker on the Baron's cane. Reach the Liquid Time sample.</p>
-      </div>
-      <div class="card">
-        <h2>Health</h2>
-        <div id="hp-pips" class="hp-pips"></div>
-        <div class="medkit-counter" id="medkit-counter" aria-label="Medkits">
-          <span class="medkit-icon" aria-hidden="true">+</span>
-          <span id="medkit-held">0</span>
-          <span class="medkit-hint">· Press H</span>
-        </div>
-      </div>
-      <div class="card">
-        <h2>Alarm</h2>
-        <div id="alarm-tier" class="alarm-tier" data-tier="normal">Normal</div>
-      </div>
-      <div class="card">
-        <h2>Coins</h2>
-        <div id="currency" class="currency"><span class="currency-icon" aria-hidden="true">⬢</span><span id="currency-amount">0</span></div>
-      </div>
-      <div class="card sonar-card">
-        <h2>Sonic Crest</h2>
-        <p id="sonar-status">Scanning&hellip;</p>
       </div>
     </aside>
   </div>
@@ -203,8 +218,8 @@ appRoot.innerHTML = `
 const canvas = document.querySelector<HTMLCanvasElement>('#game-canvas');
 const statusElement = document.querySelector<HTMLDivElement>('#status');
 const objectiveElement = document.querySelector<HTMLParagraphElement>('#objective');
-const sonarElement = document.querySelector<HTMLParagraphElement>('#sonar-status');
-const weaponElement = document.querySelector<HTMLParagraphElement>('#weapon-status');
+const sonarElement = document.querySelector<HTMLElement>('#sonar-status');
+const weaponElement = document.querySelector<HTMLElement>('#weapon-status');
 const pauseMenu = document.querySelector<HTMLDivElement>('#pause-menu');
 const btnResume = document.querySelector<HTMLButtonElement>('#btn-resume');
 const btnRestart = document.querySelector<HTMLButtonElement>('#btn-restart');
@@ -584,7 +599,7 @@ const game = new GameApp({
     sonarElement.textContent = message;
   },
   onWeaponChange: (weapon) => {
-    weaponElement.textContent = `Equipped: ${weapon}`;
+    weaponElement.textContent = weapon;
   },
   onPauseToggle: (isPaused) => {
     if (isPaused) {
