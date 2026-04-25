@@ -87,9 +87,14 @@ Motivated by TripoSR producing a melted-blob mesh on a complex cyberpunk referen
   - Staged progress wired via optional `progress_callback` constructor kwarg on `InstantMeshPipeline`. UI maps pipeline-internal 0..1 progress to UI band 0.20..0.85 with stage messages: "Loading Zero123++ pipeline" → "Generating multi-view (Zero123++)" → "Loading reconstruction model" → "Reconstructing mesh (LRM)" → "Mesh complete"
   - Sidecar `extra` carries InstantMesh-specific fields (config_name, diffusion_steps, scale, seed)
   - **Pending runtime verification:** a real `python app.py` browser session with the cyberpunk reference image, plus `python convert.py <img> --pipeline instantmesh`
-- [ ] **3.5.5** README InstantMesh section
-  - Setup, timing, VRAM, vertex-color vs textured (link to future spec for textured)
-  - Pinned upstream commit recorded
+- [x] **3.5.5** README InstantMesh section
+  - Quickstart copy-paste (5 lines: pip install, install script, probe, prefetch, run)
+  - Timing on target hardware (30–60 s, plus first-run download)
+  - VRAM strategy explained (fp16 + manual offload between stages)
+  - Vertex colors vs textured rationale + link to `future-specs/image-to-3d-instantmesh-textured.md`
+  - Pinned upstream commit `08822c52` recorded with link to GitHub
+  - "Probe failed?" troubleshooting maps onto the messages emitted by `--probe-instantmesh`
+  - Updated top-of-README pipelines list to show 3 options with quality / speed / VRAM trade-offs
 
 ### Checkpoint 3.5 — InstantMesh quality alternative
 - [ ] Cyberpunk reference image produces a recognisable mesh (the bar TripoSR failed)
