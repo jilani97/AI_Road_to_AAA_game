@@ -32,7 +32,7 @@ from typing import Optional
 
 _LOG = logging.getLogger("image-to-3d")
 
-PIPELINE_CHOICES = ("triposr", "trellis")
+PIPELINE_CHOICES = ("triposr", "instantmesh", "trellis")
 
 
 def probe() -> int:
@@ -175,17 +175,17 @@ def convert_image(
     if pipeline_name == "trellis":
         print(
             "Trellis pipeline not yet implemented. Lands in Phase 4 "
-            "(see tasks/image-to-3d-plan.md). Use --pipeline triposr for now.",
+            "(see tasks/image-to-3d-plan.md). Use --pipeline triposr or "
+            "--pipeline instantmesh for now.",
             file=sys.stderr,
         )
         return 10
-    if pipeline_name != "triposr":
+    if pipeline_name not in ("triposr", "instantmesh"):
         raise ValueError(f"unknown pipeline: {pipeline_name}")
 
     # Deferred imports — skip heavy modules when the user only wants --probe.
     from output import export_scene_to_glb, resolve_output_path, write_sidecar_meta
     from preprocessing import load_and_prepare
-    from pipelines.triposr import TripoSRPipeline
 
     total_start = time.perf_counter()
 
@@ -193,12 +193,26 @@ def convert_image(
     image = load_and_prepare(input_path, remove_background=remove_background)
 
     _LOG.info("running pipeline %s", pipeline_name)
-    pipeline = TripoSRPipeline()
-    extra_meta: dict[str, object] = {
-        "chunk_size": pipeline.chunk_size,
-        "mc_resolution": pipeline.mc_resolution,
-        "device": pipeline.device,
-    }
+    if pipeline_name == "triposr":
+        from pipelines.triposr import TripoSRPipeline
+
+        pipeline = TripoSRPipeline()
+        extra_meta: dict[str, object] = {
+            "chunk_size": pipeline.chunk_size,
+            "mc_resolution": pipeline.mc_resolution,
+            "device": pipeline.device,
+        }
+    else:
+        from pipelines.instantmesh import InstantMeshPipeline
+
+        pipeline = InstantMeshPipeline()
+        extra_meta = {
+            "config_name": pipeline.config_name,
+            "diffusion_steps": pipeline.diffusion_steps,
+            "scale": pipeline.scale,
+            "seed": pipeline.seed,
+            "device": pipeline.device,
+        }
 
     scene = pipeline.generate(image)
 

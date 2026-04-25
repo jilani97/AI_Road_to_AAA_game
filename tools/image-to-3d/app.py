@@ -26,6 +26,7 @@ _LOG = logging.getLogger("image-to-3d.app")
 
 PIPELINE_CHOICES: list[tuple[str, str]] = [
     ("TripoSR — fast, low VRAM (~15 s/image on RTX 2000 Ada)", "triposr"),
+    ("InstantMesh — multi-view fusion (~30–60 s, ~6.5 GB weights, vertex colours)", "instantmesh"),
     ("Trellis — quality, higher VRAM (Phase 4 — not yet implemented)", "trellis"),
 ]
 
@@ -48,18 +49,17 @@ def _generate(
         raise gr.Error("Drop an image before clicking Generate.")
     if pipeline_name == "trellis":
         raise gr.Error(
-            "Trellis is not yet implemented (Phase 4). Use TripoSR for now."
+            "Trellis is not yet implemented (Phase 4). Use TripoSR or InstantMesh."
         )
-    if pipeline_name != "triposr":
+    if pipeline_name not in ("triposr", "instantmesh"):
         raise gr.Error(f"Unknown pipeline: {pipeline_name!r}")
 
-    # Deferred imports so boot doesn't pay TripoSR's load-on-first-call cost.
+    # Deferred imports so boot doesn't pay any pipeline's load-on-first-call cost.
     from output import (
         export_scene_to_glb,
         resolve_output_path,
         write_sidecar_meta,
     )
-    from pipelines.triposr import TripoSRPipeline
     from preprocessing import preprocess_image
 
     start = time.perf_counter()
@@ -68,9 +68,34 @@ def _generate(
         progress(0.05, desc="Preprocessing image…")
         preprocessed = preprocess_image(image, remove_background=remove_background)
 
-        progress(0.25, desc="Loading TripoSR + running inference…")
-        pipeline = TripoSRPipeline()
-        scene = pipeline.generate(preprocessed)
+        if pipeline_name == "triposr":
+            from pipelines.triposr import TripoSRPipeline
+
+            progress(0.25, desc="Loading TripoSR + running inference…")
+            pipeline = TripoSRPipeline()
+            scene = pipeline.generate(preprocessed)
+            extra: dict[str, object] = {
+                "chunk_size": pipeline.chunk_size,
+                "mc_resolution": pipeline.mc_resolution,
+                "device": pipeline.device,
+            }
+        else:
+            from pipelines.instantmesh import InstantMeshPipeline
+
+            # Map pipeline-internal progress (0..1) to UI band 0.20..0.85.
+            def _on_stage(fraction: float, message: str) -> None:
+                progress(0.20 + fraction * 0.65, desc=message)
+
+            pipeline = InstantMeshPipeline(progress_callback=_on_stage)
+            progress(0.20, desc="Starting InstantMesh…")
+            scene = pipeline.generate(preprocessed)
+            extra = {
+                "config_name": pipeline.config_name,
+                "diffusion_steps": pipeline.diffusion_steps,
+                "scale": pipeline.scale,
+                "seed": pipeline.seed,
+                "device": pipeline.device,
+            }
 
         progress(0.85, desc="Exporting GLB + sidecar…")
         out_path = resolve_output_path("ui")
@@ -81,9 +106,7 @@ def _generate(
             pipeline=pipeline_name,
             scene=scene,
             extra={
-                "chunk_size": pipeline.chunk_size,
-                "mc_resolution": pipeline.mc_resolution,
-                "device": pipeline.device,
+                **extra,
                 "remove_background": remove_background,
                 "input_size": list(image.size),
             },
@@ -174,9 +197,12 @@ def build_ui() -> gr.Blocks:
 
         gr.Markdown(
             """
-            Pipeline: **TripoSR** (MIT, fast), **Trellis** (MIT, quality —
-            Phase 4, not yet implemented). First TripoSR call downloads
-            ~1.6 GB of weights into the HuggingFace cache — offline after that.
+            Pipelines: **TripoSR** (MIT, fast), **InstantMesh**
+            (Apache 2.0, multi-view fusion via Zero123++, vertex colours),
+            **Trellis** (MIT, quality — Phase 4, not yet implemented).
+            First TripoSR call downloads ~1.6 GB of weights; first InstantMesh
+            call ~6.5 GB. Run `convert.py --prefetch-weights instantmesh`
+            ahead of time to avoid the surprise. Offline after the cache fills.
             """
         )
 

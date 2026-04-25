@@ -32,13 +32,18 @@ import logging
 import sys
 import time
 from pathlib import Path
-from typing import Any, ClassVar, Optional
+from typing import Any, Callable, ClassVar, Optional
 
 import numpy as np
 import trimesh
 from PIL import Image
 
 from .base import Pipeline
+
+ProgressCallback = Callable[[float, str], None]
+"""Optional callback fired at stage boundaries — `(fraction_in_0_1, message)`.
+Used by the Gradio UI to advance its progress bar through both inference
+stages; CLI / tests pass None and rely on log output instead."""
 
 _LOG = logging.getLogger(__name__)
 
@@ -76,12 +81,22 @@ class InstantMeshPipeline(Pipeline):
         scale: float = DEFAULT_SCALE,
         seed: int = DEFAULT_SEED,
         device: Optional[str] = None,
+        progress_callback: Optional[ProgressCallback] = None,
     ) -> None:
         self.config_name = config_name
         self.diffusion_steps = diffusion_steps
         self.scale = scale
         self.seed = seed
         self.device = device or self._pick_device()
+        self.progress_callback = progress_callback
+
+    def _report(self, fraction: float, message: str) -> None:
+        if self.progress_callback is None:
+            return
+        try:
+            self.progress_callback(fraction, message)
+        except Exception:  # noqa: BLE001 — UI progress hiccups must not break inference
+            _LOG.exception("progress callback raised; ignoring")
 
     @staticmethod
     def _pick_device() -> str:
@@ -200,9 +215,11 @@ class InstantMeshPipeline(Pipeline):
         # ---- Stage 1: Zero123++ multi-view ----
         # Move the diffusion pipeline to device only for this stage so that
         # peak VRAM = max(stage1, stage2) rather than the sum.
+        self._report(0.0, "Loading Zero123++ pipeline")
         diffusion = self._load_diffusion()
         diffusion = diffusion.to(self.device)
         try:
+            self._report(0.1, "Generating multi-view (Zero123++)")
             stage1_start = time.perf_counter()
             mv_image = diffusion(
                 image,
@@ -226,6 +243,7 @@ class InstantMeshPipeline(Pipeline):
         views = rearrange(mv_tensor, "c (n h) (m w) -> (n m) c h w", n=3, m=2)
 
         # ---- Stage 2: LRM reconstruction ----
+        self._report(0.55, "Loading reconstruction model")
         model = self._load_recon_model(config)
         input_cameras = get_zero123plus_input_cameras(
             batch_size=1, radius=4.0 * self.scale
@@ -236,6 +254,7 @@ class InstantMeshPipeline(Pipeline):
             views_batch, 320, interpolation=3, antialias=True
         ).clamp(0, 1)
 
+        self._report(0.7, "Reconstructing mesh (LRM)")
         stage2_start = time.perf_counter()
         with torch.no_grad():
             planes = model.forward_planes(views_batch, input_cameras)
@@ -248,6 +267,7 @@ class InstantMeshPipeline(Pipeline):
             "Reconstruction %.2f s",
             time.perf_counter() - stage2_start,
         )
+        self._report(1.0, "Mesh complete")
 
         vertices, faces, vertex_colors = mesh_out
         if vertices is None or len(vertices) == 0:
