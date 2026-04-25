@@ -63,11 +63,11 @@ Ordered checklist for `tools/image-to-3d/`. Full spec in [image-to-3d-plan.md](.
 
 Motivated by TripoSR producing a melted-blob mesh on a complex cyberpunk reference image. InstantMesh = multi-view fusion via Zero123++, vertex-color output, no `nvdiffrast` build chain on Windows.
 
-- [ ] **3.5.1** Vendor InstantMesh upstream + dep manifest
-  - Clone `TencentARC/InstantMesh` to `tools/image-to-3d/external/InstantMesh/`, pin commit (record in plan)
-  - `requirements-instantmesh.txt`: `diffusers`, `accelerate`, `einops`, `kornia`, `omegaconf`, `pytorch-lightning`
-  - **No** `nvdiffrast` — vertex-color path skips it
-  - `pip check` clean alongside TripoSR's deps
+- [x] **3.5.1** Vendor InstantMesh upstream + dep manifest
+  - `install_instantmesh.py` clones `TencentARC/InstantMesh` to `external/InstantMesh/`, pinned to `08822c52`
+  - `requirements-instantmesh.txt`: `diffusers>=0.27,<0.32`, `pytorch-lightning>=2.1,<3`, `torchmetrics>=1,<2`, `accelerate>=0.30`. Drops upstream's `gradio==3.41.2`, `transformers==4.34.1`, `diffusers==0.20.2` (we use newer base pins), `nvdiffrast` (vertex-color skips it), `bitsandbytes` / `plyfile` / `tensorboard` / `webdataset` (training-only or unused at inference)
+  - `pip check` clean
+  - Import probe `from src.utils.train_util import instantiate_from_config` exits cleanly
 - [ ] **3.5.2** Import probe + weight prefetch
   - `python convert.py --probe-instantmesh` reports import success or actionable error
   - `--prefetch-weights instantmesh` snapshot-downloads `TencentARC/InstantMesh` (~5 GB) and `sudo-ai/zero123plus-v1.2` (~1.5 GB)

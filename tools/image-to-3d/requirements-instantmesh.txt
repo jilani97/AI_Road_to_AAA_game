@@ -1,0 +1,41 @@
+# InstantMesh pipeline deps (Phase 3.5).
+#
+# Install on top of the base requirements.txt:
+#     .venv/Scripts/pip install -r requirements.txt
+#     .venv/Scripts/pip install -r requirements-instantmesh.txt
+#
+# This file is filtered from upstream's requirements.txt (TencentARC/InstantMesh
+# pinned at commit 08822c52). What we deliberately *omit* and *why*:
+#
+#   - gradio==3.41.2  → we use gradio>=5.0 from the base reqs for our own UI.
+#                       Upstream's pin is for their demo app, which we don't run.
+#   - transformers==4.34.1 + diffusers==0.20.2 → we use newer pins (see below)
+#                       to harmonize with TripoSR. InstantMesh's vendored code
+#                       uses stable diffusers/transformers public APIs; risk of
+#                       drift is real but bounded — revisit if inference breaks.
+#   - nvdiffrast      → only needed for the textured/UV-mapped output path.
+#                       Phase 3.5 ships vertex-color output (skips nvdiffrast)
+#                       because nvdiffrast on Windows means MSVC + CUDA toolkit
+#                       building from source. Textured output is a future spec.
+#   - bitsandbytes    → 8-bit quantization, not imported by inference path,
+#                       no Windows wheels.
+#   - plyfile, tensorboard, webdataset → training-only or unused at inference.
+#
+# Already provided by base requirements.txt and reused as-is:
+#   einops, omegaconf, xatlas, imageio, transformers (>=4.44),
+#   huggingface_hub, PyMCubes, trimesh, rembg, Pillow, numpy.
+
+# Stable diffusers ≥0.27 (covers Zero123++ usage) but pinned <0.32 to avoid
+# breaking changes in DiffusionPipeline.from_pretrained signature.
+diffusers>=0.27.0,<0.32.0
+
+# Used for `seed_everything` and the LightningModule base class on the mesh
+# model. v2.x line is fine.
+pytorch-lightning>=2.1.0,<3.0
+
+# Transitive: torchmetrics for the LPIPS metric used in InstantMesh's eval/
+# inference logging path.
+torchmetrics>=1.0.0,<2.0
+
+# Required by diffusers for sequential CPU offload (our VRAM-saving knob).
+accelerate>=0.30.0
