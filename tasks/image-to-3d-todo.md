@@ -71,12 +71,15 @@ Motivated by TripoSR producing a melted-blob mesh on a complex cyberpunk referen
 - [x] **3.5.2** Import probe + weight prefetch
   - `python convert.py --probe-instantmesh` checks 4 pip deps + vendored upstream import; exit 0 happy path, exit 1 with actionable message on missing tree (verified by hiding `external/InstantMesh`)
   - `--prefetch-weights instantmesh` calls `huggingface_hub.snapshot_download` for `TencentARC/InstantMesh` and `sudo-ai/zero123plus-v1.2` (not run end-to-end yet — 6.5 GB download deferred to user's first real session)
-- [ ] **3.5.3** Pipeline (`pipelines/instantmesh.py`)
+- [x] **3.5.3** Pipeline (`pipelines/instantmesh.py`) — code complete; runtime checks deferred to user's first GPU + 6.5 GB-weight session
   - Two stages: Zero123++ → 6 multi-view → InstantMesh transformer → vertex-colored mesh
-  - FP16 + sequential CPU offload (peak VRAM = larger stage, not sum)
-  - Class-level cache for loaded models (same pattern as TripoSR)
-  - Output `trimesh.Scene` with `visual.vertex_colors` populated
-  - **Risk:** upstream expects to run from its repo root — replicate TripoSR shim pattern. Time-box at half a day.
+  - FP16 diffusion + manual offload between stages (peak VRAM = larger stage, not sum)
+  - Class-level cache for both diffusion pipeline and reconstruction model, keyed by `(config_name, device)`
+  - Output `trimesh.Scene` with vertex colors populated; `use_texture_map=False` skips nvdiffrast
+  - Slow/gpu-marked pytest covers: vertex-color presence, model caching across calls, peak VRAM under 8 GB
+  - sys.path shim mirrors TripoSR's pattern — config + `instantiate_from_config` resolved cleanly via the import probe
+  - Verified non-runtime: imports cleanly, instantiates on cpu, finds `instant-mesh-large.yaml` config
+  - **Pending runtime verification (run pytest -m slow tests/test_instantmesh.py):** weight download + first inference + peak VRAM measurement
 - [ ] **3.5.4** UI + CLI route to InstantMesh
   - Radio: TripoSR / **InstantMesh** / Trellis (Trellis stays stubbed)
   - CLI `--pipeline instantmesh`
