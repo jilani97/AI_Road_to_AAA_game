@@ -3,11 +3,14 @@
 Usage:
     python convert.py image.png                          # triposr, default out dir
     python convert.py image.png --pipeline triposr       # explicit
+    python convert.py image.png --pipeline instantmesh   # Phase 3.5 (Task 3.5.4)
     python convert.py image.png --pipeline trellis       # Phase 4 (not yet wired)
     python convert.py image.png --output-dir /tmp/out    # override target
     python convert.py image.png --no-bg-removal          # trust input alpha
     python convert.py --probe                            # report torch / CUDA / GPU
+    python convert.py --probe-instantmesh                # check InstantMesh deps (Phase 3.5)
     python convert.py --probe-trellis                    # check Trellis deps (Phase 4)
+    python convert.py --prefetch-weights instantmesh     # snapshot-download InstantMesh + Zero123++
 
 Exit codes:
     0   success
@@ -82,6 +85,81 @@ def probe_trellis() -> int:
             file=sys.stderr,
         )
         return 1
+    return 0
+
+
+def probe_instantmesh() -> int:
+    """Verify InstantMesh's pip deps + vendored upstream are importable (Task 3.5.2)."""
+    print("[image-to-3d] instantmesh dependency probe")
+    missing: list[str] = []
+
+    for module in ("diffusers", "pytorch_lightning", "torchmetrics", "accelerate"):
+        try:
+            __import__(module)
+            print(f"  {module:<35} OK")
+        except ImportError:
+            print(f"  {module:<35} MISSING", file=sys.stderr)
+            missing.append(module)
+
+    upstream_root = Path(__file__).resolve().parent / "external" / "InstantMesh"
+    label = "external/InstantMesh"
+    if not (upstream_root / "src").is_dir():
+        print(f"  {label:<35} MISSING", file=sys.stderr)
+        print(
+            "  -> run `python install_instantmesh.py` to vendor the upstream tree.",
+            file=sys.stderr,
+        )
+        missing.append(label)
+    else:
+        sys.path.insert(0, str(upstream_root))
+        try:
+            from src.utils.train_util import instantiate_from_config  # noqa: F401
+            print(f"  {label:<35} OK")
+        except Exception as exc:  # noqa: BLE001 — surface any import-chain breakage
+            print(f"  {label:<35} IMPORT FAILED: {exc}", file=sys.stderr)
+            missing.append(label)
+        finally:
+            sys.path.remove(str(upstream_root))
+
+    if missing:
+        print(
+            "InstantMesh deps missing. Fix with:\n"
+            "  pip install -r requirements-instantmesh.txt\n"
+            "  python install_instantmesh.py\n"
+            "See README.md §InstantMesh setup for details.",
+            file=sys.stderr,
+        )
+        return 1
+    return 0
+
+
+_PREFETCH_REPOS: dict[str, tuple[str, ...]] = {
+    "instantmesh": ("TencentARC/InstantMesh", "sudo-ai/zero123plus-v1.2"),
+}
+
+
+def prefetch_weights(pipeline: str) -> int:
+    """Snapshot-download HF weights for a pipeline ahead of first inference (Task 3.5.2)."""
+    repos = _PREFETCH_REPOS.get(pipeline)
+    if repos is None:
+        print(f"unknown --prefetch-weights target: {pipeline}", file=sys.stderr)
+        return 64
+
+    try:
+        from huggingface_hub import snapshot_download
+    except ImportError as exc:
+        print(f"huggingface_hub import failed: {exc}", file=sys.stderr)
+        return 1
+
+    for repo_id in repos:
+        print(f"[image-to-3d] prefetching {repo_id} …")
+        try:
+            local_path = snapshot_download(repo_id=repo_id)
+        except Exception as exc:  # noqa: BLE001 — surface HF errors verbatim
+            print(f"  FAILED: {exc}", file=sys.stderr)
+            return 1
+        print(f"  cached at {local_path}")
+
     return 0
 
 
@@ -177,9 +255,23 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Print torch / CUDA / GPU environment info and exit.",
     )
     parser.add_argument(
+        "--probe-instantmesh",
+        action="store_true",
+        help="Check that InstantMesh's deps + vendored upstream are importable and exit.",
+    )
+    parser.add_argument(
         "--probe-trellis",
         action="store_true",
         help="Check that Trellis's native deps are importable and exit.",
+    )
+    parser.add_argument(
+        "--prefetch-weights",
+        choices=("instantmesh",),
+        default=None,
+        help=(
+            "Snapshot-download a pipeline's HF weights to ~/.cache/huggingface "
+            "and exit. Useful before the first real inference run."
+        ),
     )
     return parser
 
@@ -195,8 +287,12 @@ def main() -> int:
 
     if args.probe:
         return probe()
+    if args.probe_instantmesh:
+        return probe_instantmesh()
     if args.probe_trellis:
         return probe_trellis()
+    if args.prefetch_weights:
+        return prefetch_weights(args.prefetch_weights)
 
     if args.input is None:
         parser.print_help(sys.stderr)
