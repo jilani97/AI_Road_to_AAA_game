@@ -4,10 +4,11 @@
 
 A separate Python tool living at `tools/image-to-3d/`, siblinged to the game's `src/`. It accepts a 2-D image (concept art / sketch / reference photo) and produces a GLB in `public/models/generated/` that the Babylon game can `ImportMeshAsync` directly. The tool runs **fully offline** after weights are cached, uses a **Gradio web UI** for drag-and-drop authoring, and exposes a **CLI** for scripted / batch use.
 
-Two pipelines are selectable from the UI:
+Three pipelines are selectable from the UI:
 
 - **TripoSR** (MIT) — fast path, ~2 GB VRAM, seconds per image, lower quality.
-- **Trellis** (MIT) — quality path, ~8–12 GB VRAM, ~60 s per image, high quality.
+- **InstantMesh** (Apache 2.0) — middle path, ~6–8 GB VRAM, ~30–60 s per image, multi-view fusion via Zero123++. Vertex-color output skips `nvdiffrast`, so no native-kernel build chain on Windows.
+- **Trellis** (MIT) — quality path, ~8–12 GB VRAM, ~60 s per image, high quality. **Optional** — only pursued if InstantMesh quality proves insufficient.
 
 The full decision rationale lives in [`image-to-3d-decisions.md`](./image-to-3d-decisions.md) (written alongside implementation, not upfront).
 
@@ -20,7 +21,7 @@ Confirmed via `nvidia-smi`:
 - RAM: 64 GB
 - Driver: 581.95
 
-**Key implication:** the 8 GB VRAM ceiling makes Trellis *tight*. The plan assumes Trellis runs with FP16 + attention slicing + sequential CPU offloading; if that still OOMs on real inputs, Phase 4 falls back to **InstantMesh** (Apache 2.0, typically ~6–8 GB VRAM with similar quality).
+**Key implication:** the 8 GB VRAM ceiling makes Trellis *tight*. **InstantMesh (Phase 3.5)** is now a first-class pipeline — Apache 2.0, ~6–8 GB VRAM, no native-kernel build chain. If InstantMesh quality is good enough on real inputs, Phase 4 (Trellis) can be skipped entirely.
 
 ## Architecture Decisions
 
@@ -64,7 +65,8 @@ AI_Road_to_AAA_game/
             ├── __init__.py
             ├── base.py           # Pipeline ABC
             ├── triposr.py        # TripoSR implementation
-            └── trellis.py        # Trellis implementation (Phase 4)
+            ├── instantmesh.py    # InstantMesh implementation (Phase 3.5)
+            └── trellis.py        # Trellis implementation (Phase 4 — optional)
 ```
 
 ## Dependency Graph
@@ -100,7 +102,18 @@ Phase 3 — Game integration smoke test
 
 Checkpoint 3: Generated GLB from Phase 2 renders in the running dev server.
 
-Phase 4 — Trellis pipeline (quality path)
+Phase 3.5 — InstantMesh pipeline (Apache 2.0 quality alternative)
+    │
+    ├── Task 3.5.1: Vendor InstantMesh upstream + dep manifest
+    ├── Task 3.5.2: Import probe + weight prefetch
+    ├── Task 3.5.3: InstantMesh pipeline module
+    ├── Task 3.5.4: UI + CLI picker routes to InstantMesh
+    └── Task 3.5.5: README InstantMesh section
+
+Checkpoint 3.5: Selecting InstantMesh in the UI produces a higher-quality GLB than
+                TripoSR on a complex reference image, within 60 s, under 8 GB VRAM.
+
+Phase 4 — Trellis pipeline (quality path, optional)
     │
     ├── Task 4.1: Trellis deps install + import smoke test
     ├── Task 4.2: Trellis pipeline module with VRAM-safe config
@@ -447,9 +460,143 @@ Implement `TripoSRPipeline` in `pipelines/triposr.py` using the `tsr` package fr
 
 ---
 
-### Phase 4 — Trellis pipeline (quality path)
+### Phase 3.5 — InstantMesh pipeline (Apache 2.0 quality alternative)
 
-This phase carries real risk. 8 GB VRAM is the target hardware's ceiling. If Trellis cannot be made to fit, the fallback is **InstantMesh** (Apache 2.0, similar VRAM footprint, proven high-quality output).
+The middle path: better quality than TripoSR, no `nvdiffrast` / `diff-gaussian-rasterization` Windows-wheel rabbit hole, Apache 2.0 license. Two-stage architecture — Zero123++ generates 6 multi-view images, InstantMesh's transformer fuses them into a vertex-colored mesh. Vertex-color output is the explicit choice here; UV-mapped textured output goes through `nvdiffrast` and is deferred to a future spec.
+
+#### Task 3.5.1: Vendor InstantMesh upstream + dep manifest
+
+**Description:** Clone `https://github.com/TencentARC/InstantMesh` to `tools/image-to-3d/external/InstantMesh/` and pin to a specific commit (recorded in this plan once vendored). No PyPI package exists. Add `requirements-instantmesh.txt` with the runtime deps the upstream repo declares: `diffusers`, `accelerate`, `einops`, `kornia`, `omegaconf`, `pytorch-lightning`. Where possible, harmonize versions with the existing base `requirements.txt` to avoid `pip check` conflicts. Do **not** add `nvdiffrast` — vertex-color path skips it.
+
+**Acceptance criteria:**
+- [ ] `tools/image-to-3d/external/InstantMesh/` exists with the upstream tree, pinned commit recorded here in this plan
+- [ ] `tools/image-to-3d/requirements-instantmesh.txt` exists with pinned versions
+- [ ] `pip install -r requirements-instantmesh.txt` completes without error inside the existing `.venv`
+- [ ] `pip check` reports no conflicts with TripoSR's deps
+
+**Verification:**
+- [ ] Clean install in the existing venv → no errors
+- [ ] `python -c "import sys; sys.path.insert(0, 'external/InstantMesh'); from src.utils.train_util import instantiate_from_config"` (or whichever module is the canonical entry) exits cleanly
+
+**Dependencies:** 0.2 (the venv).
+
+**Files likely touched:**
+- `tools/image-to-3d/external/InstantMesh/` (vendored, tracked)
+- `tools/image-to-3d/requirements-instantmesh.txt`
+
+**Estimated scope:** S.
+
+---
+
+#### Task 3.5.2: Import probe + weight prefetch
+
+**Description:** Add `python convert.py --probe-instantmesh` that imports the vendored modules and reports success or a friendly error pointing at the README troubleshooting section. As part of the probe (or as a separate `--prefetch-weights instantmesh` flag), optionally pre-download the two weight sets — `TencentARC/InstantMesh` (~5 GB) and `sudo-ai/zero123plus-v1.2` (~1.5 GB) — via `huggingface_hub.snapshot_download` so the first real run isn't a 6 GB surprise.
+
+**Acceptance criteria:**
+- [ ] `python convert.py --probe-instantmesh` returns exit code 0 on a working install
+- [ ] On a missing-module failure, the error points at a specific README anchor
+- [ ] `--prefetch-weights instantmesh` downloads InstantMesh + Zero123++ to HF cache without running inference
+
+**Verification:**
+- [ ] After Task 3.5.1, probe exits 0
+- [ ] Force a fail (uninstall `omegaconf`) → probe emits actionable error, not a raw stack trace
+
+**Dependencies:** 3.5.1.
+
+**Files likely touched:**
+- `tools/image-to-3d/convert.py` (adds `--probe-instantmesh` and `--prefetch-weights` branches)
+- `tools/image-to-3d/README.md` (probe + prefetch section, anchor target for the error message)
+
+**Estimated scope:** S.
+
+---
+
+#### Task 3.5.3: InstantMesh pipeline module
+
+**Description:** `pipelines/instantmesh.py` implementing the existing `Pipeline` ABC. Two stages: (1) Zero123++ generates 6 multi-view images from the prepared input, (2) InstantMesh's transformer fuses the views into a triplane and extracts a vertex-colored mesh. VRAM-safe config — FP16 weights (`torch_dtype=torch.float16`), sequential CPU offload between the two stages so peak VRAM is the larger of the two, not the sum. Output is a `trimesh.Scene` with vertex colors baked into the mesh's `visual` attribute (no separate texture image file). Class-level cache for model instances so repeated calls within a process don't reload weights — same pattern as TripoSR.
+
+**Acceptance criteria:**
+- [ ] `InstantMeshPipeline.generate(image)` returns a non-empty `trimesh.Scene` with vertex colors set
+- [ ] Peak VRAM during inference stays < 8 000 MiB (monitored via `torch.cuda.max_memory_allocated`)
+- [ ] Output mesh has visibly better topology than TripoSR on the cyberpunk Hud-hud reference image (the test case that motivated this phase)
+- [ ] Model weights and Zero123++ checkpoint cache under `~/.cache/huggingface/` and don't re-download on second call
+- [ ] Second call within the same process reuses the loaded models (no second weight load)
+
+**Verification:**
+- [ ] Slow/gpu-marked pytest: pass a 512×512 fixture RGBA image, assert `len(scene.geometry) > 0`, total vertex count > 1000, and the first geometry has `visual.vertex_colors` populated
+- [ ] Manual `nvidia-smi -l 1` during generation: peak VRAM under budget
+- [ ] Manual quality check on the cyberpunk reference image — output is recognisable as the input subject (the bar TripoSR failed)
+
+**Dependencies:** 3.5.2, 1.2 (`Pipeline` ABC).
+
+**Files likely touched:**
+- `tools/image-to-3d/pipelines/instantmesh.py`
+- `tools/image-to-3d/tests/test_instantmesh.py` (marked slow/gpu — skipped on CI)
+
+**Estimated scope:** M.
+
+**Risk:** the InstantMesh upstream repo expects to run from its own working directory (config-relative imports, hard-coded paths in YAML). Replicate the TripoSR shim pattern (`sys.path.insert`, optional monkey-patching of any path-resolving helpers). Budget extra time for the path-juggling — this is the most likely place to lose a half-day.
+
+---
+
+#### Task 3.5.4: UI + CLI route to InstantMesh
+
+**Description:** Add `instantmesh` as a third option in the Gradio radio picker (between `triposr` and `trellis`) and the CLI `--pipeline` choices. Update the staged progress bar to surface InstantMesh's two stages: image preprocessing → multi-view generation (Zero123++) → mesh fusion (InstantMesh) → export → done. CLI exit codes and Gradio error toasts already work at the framework level — no new error handling needed beyond the existing `gr.Error` path.
+
+**Acceptance criteria:**
+- [ ] UI radio shows three pipelines: TripoSR, InstantMesh, Trellis
+- [ ] Selecting InstantMesh produces a GLB end-to-end
+- [ ] CLI `--pipeline instantmesh` works
+- [ ] Trellis remains stubbed with the existing "not yet implemented" error
+- [ ] Progress bar visibly advances through both InstantMesh stages, not a single frozen bar
+
+**Verification:**
+- [ ] UI flow with cyberpunk reference image — preview appears, file lands in `public/models/generated/`, no console errors
+- [ ] CLI flow with the same image produces an equivalent GLB (timestamp differs, content equivalent)
+
+**Dependencies:** 3.5.3, 2.3.
+
+**Files likely touched:**
+- `tools/image-to-3d/app.py`
+- `tools/image-to-3d/convert.py`
+
+**Estimated scope:** S.
+
+---
+
+#### Task 3.5.5: README InstantMesh section
+
+**Description:** Dedicated README section: setup steps (`pip install -r requirements-instantmesh.txt`), how long it takes (~30–60 s on this hardware), VRAM expectations, what vertex-color output means visually (and link to the future spec for textured output), how to skip InstantMesh entirely if its install fails. Record the pinned upstream commit so the doc doesn't drift if InstantMesh changes mainline behaviour.
+
+**Acceptance criteria:**
+- [ ] Section answers: how slow, what's the visual difference vs TripoSR, vertex colors vs textured (and why we picked vertex)
+- [ ] Quickstart line works copy-paste: `pip install -r requirements-instantmesh.txt && python convert.py inputs/foo.png --pipeline instantmesh`
+- [ ] Pinned upstream commit recorded in the README
+
+**Verification:**
+- [ ] Fresh-clone walkthrough — a reader can install just InstantMesh extras (skipping Trellis) and run the CLI
+
+**Dependencies:** 3.5.4.
+
+**Files likely touched:**
+- `tools/image-to-3d/README.md`
+
+**Estimated scope:** XS.
+
+---
+
+### Checkpoint 3.5 — InstantMesh quality alternative
+
+- [ ] Selecting InstantMesh in the UI produces a higher-quality GLB than TripoSR on the cyberpunk reference image, within 60 s
+- [ ] Peak VRAM stays under 8 GB
+- [ ] Vertex-color output renders correctly in the Babylon dev server (Phase 3 smoke test, if Phase 3 already done)
+- [ ] **Human review:** the cyberpunk Hud-hud reference produces a recognisable mesh — the test case that motivated this phase
+
+---
+
+### Phase 4 — Trellis pipeline (quality path, optional)
+
+This phase carries real risk and is now **optional**. 8 GB VRAM is the target hardware's ceiling, and Trellis needs `nvdiffrast` + `diff-gaussian-rasterization` Windows wheels that don't always exist as binaries. **Skip Phase 4 entirely** if InstantMesh (Phase 3.5) produces acceptable quality — Trellis is preserved here as an upgrade path, not a requirement.
 
 #### Task 4.1: Trellis dependencies + import smoke test
 
@@ -499,7 +646,7 @@ This phase carries real risk. 8 GB VRAM is the target hardware's ceiling. If Tre
 
 **Estimated scope:** M.
 
-**Fallback:** if Trellis cannot be made to fit in 8 GB even with aggressive offloading, swap to `InstantMesh`. Task description in the TODO has the swap procedure.
+**Fallback:** if Trellis cannot be made to fit in 8 GB even with aggressive offloading, drop Phase 4 entirely — InstantMesh (Phase 3.5) is already the quality path; Trellis was the optional upgrade.
 
 ---
 
@@ -639,8 +786,9 @@ This phase carries real risk. 8 GB VRAM is the target hardware's ceiling. If Tre
 
 | Risk | Impact | Mitigation |
 |------|--------|------------|
-| **Trellis won't fit in 8 GB VRAM even with FP16 + CPU offload** | High | Task 4.2 has an explicit InstantMesh fallback. We'll know by Checkpoint 4; fallback is ~4 h of work, not a re-architecture. |
-| **Windows wheels for `nvdiffrast` / `diff-gaussian-rasterization` missing** | High | Task 4.1 documents WSL2 fallback. If both paths fail on Windows, Trellis is cut and we use InstantMesh (no native kernels required). |
+| **Trellis won't fit in 8 GB VRAM even with FP16 + CPU offload** | Medium | InstantMesh (Phase 3.5) is now the default quality path. Trellis is the upgrade path; if it OOMs we just skip Phase 4. |
+| **Windows wheels for `nvdiffrast` / `diff-gaussian-rasterization` missing** | Medium | InstantMesh's vertex-color path doesn't need them. Trellis falls back to WSL2 or is cut entirely. |
+| **InstantMesh upstream's relative imports / config paths break when imported from outside its repo root** | Medium | Replicate the TripoSR shim pattern (`sys.path.insert`, optional monkey-patching). Time-box Task 3.5.3 — if the path-juggling exceeds half a day, raise it before continuing. |
 | **PyTorch + CUDA 12.x install mismatched with driver** | Med | Driver is 581.95 (supports CUDA 12.6 / 12.4 / 12.1). Pin to cu121 and document the exact `--extra-index-url` used. |
 | **HuggingFace hub download interrupted mid-weight** | Low | Document cache-clear command in README. HF hub resumes partial downloads by default. |
 | **First Gradio launch blocked by Windows Defender / firewall** | Low | Gradio prompts once; document the prompt in the README. |

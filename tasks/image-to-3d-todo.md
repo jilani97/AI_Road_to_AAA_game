@@ -59,7 +59,38 @@ Ordered checklist for `tools/image-to-3d/`. Full spec in [image-to-3d-plan.md](.
 - [ ] All offline after weights cached
 - [ ] **Human review:** authoring loop is fast enough to iterate
 
-## Phase 4 — Trellis pipeline (quality path, risky)
+## Phase 3.5 — InstantMesh pipeline (Apache 2.0, middle quality path)
+
+Motivated by TripoSR producing a melted-blob mesh on a complex cyberpunk reference image. InstantMesh = multi-view fusion via Zero123++, vertex-color output, no `nvdiffrast` build chain on Windows.
+
+- [ ] **3.5.1** Vendor InstantMesh upstream + dep manifest
+  - Clone `TencentARC/InstantMesh` to `tools/image-to-3d/external/InstantMesh/`, pin commit (record in plan)
+  - `requirements-instantmesh.txt`: `diffusers`, `accelerate`, `einops`, `kornia`, `omegaconf`, `pytorch-lightning`
+  - **No** `nvdiffrast` — vertex-color path skips it
+  - `pip check` clean alongside TripoSR's deps
+- [ ] **3.5.2** Import probe + weight prefetch
+  - `python convert.py --probe-instantmesh` reports import success or actionable error
+  - `--prefetch-weights instantmesh` snapshot-downloads `TencentARC/InstantMesh` (~5 GB) and `sudo-ai/zero123plus-v1.2` (~1.5 GB)
+- [ ] **3.5.3** Pipeline (`pipelines/instantmesh.py`)
+  - Two stages: Zero123++ → 6 multi-view → InstantMesh transformer → vertex-colored mesh
+  - FP16 + sequential CPU offload (peak VRAM = larger stage, not sum)
+  - Class-level cache for loaded models (same pattern as TripoSR)
+  - Output `trimesh.Scene` with `visual.vertex_colors` populated
+  - **Risk:** upstream expects to run from its repo root — replicate TripoSR shim pattern. Time-box at half a day.
+- [ ] **3.5.4** UI + CLI route to InstantMesh
+  - Radio: TripoSR / **InstantMesh** / Trellis (Trellis stays stubbed)
+  - CLI `--pipeline instantmesh`
+  - Staged progress: preprocess → multi-view → fusion → export
+- [ ] **3.5.5** README InstantMesh section
+  - Setup, timing, VRAM, vertex-color vs textured (link to future spec for textured)
+  - Pinned upstream commit recorded
+
+### Checkpoint 3.5 — InstantMesh quality alternative
+- [ ] Cyberpunk reference image produces a recognisable mesh (the bar TripoSR failed)
+- [ ] Generation under 60 s, peak VRAM under 8 GB
+- [ ] **Human review:** quality lift over TripoSR is real, output renders in Babylon dev server
+
+## Phase 4 — Trellis pipeline (quality path, optional — only if InstantMesh insufficient)
 
 - [ ] **4.1** Deps + import probe
   - `requirements-trellis.txt`: `torch-scatter`, `xformers`, `diff-gaussian-rasterization`, `nvdiffrast`
@@ -111,5 +142,5 @@ Ordered checklist for `tools/image-to-3d/`. Full spec in [image-to-3d-plan.md](.
 - [ ] `future-specs/image-to-3d-decimation.md` — auto-decimate Trellis's high-poly output for runtime game use
 - [ ] `future-specs/image-to-3d-subfolders.md` — let the UI write to `creatures/` / `props/` / `buildings/` directly
 - [ ] `future-specs/image-to-3d-sidecar-json.md` — record source image + pipeline + timestamp alongside each GLB
-- [ ] `future-specs/image-to-3d-instantmesh.md` — add InstantMesh as a third pipeline option (the Trellis fallback, promoted to first-class)
+- [ ] `future-specs/image-to-3d-instantmesh-textured.md` — UV-mapped textured output for InstantMesh (requires `nvdiffrast`; vertex-color is the Phase 3.5 default)
 - [ ] `future-specs/image-to-3d-rigged-export.md` — rigged / animated mesh output (needs Blender scripting, not a candidate for the current tool)
