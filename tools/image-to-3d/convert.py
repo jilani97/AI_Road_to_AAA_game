@@ -69,19 +69,85 @@ def probe() -> int:
 
 
 def probe_trellis() -> int:
-    """Verify Trellis's native deps are importable (Task 4.1)."""
+    """Verify TRELLIS's pip deps, native extensions, and vendored upstream
+    are importable (Task 4.1)."""
     print("[image-to-3d] trellis dependency probe")
     missing: list[str] = []
-    for module in ("nvdiffrast", "xformers", "diff_gaussian_rasterization"):
+
+    # Pip-installable deps from upstream's setup.sh `--basic` + `--demo` paths.
+    # `cv2` is opencv-python-headless; `spconv.pytorch` is the namespaced import
+    # for `spconv-cu121`.
+    pip_modules = (
+        "imageio",
+        "easydict",
+        "cv2",
+        "open3d",
+        "xatlas",
+        "pyvista",
+        "pymeshfix",
+        "igraph",
+        "utils3d",
+        "xformers",
+        "spconv.pytorch",
+    )
+    for module in pip_modules:
         try:
             __import__(module)
             print(f"  {module:<35} OK")
         except ImportError:
             print(f"  {module:<35} MISSING", file=sys.stderr)
             missing.append(module)
+
+    # CUDA-built native extensions. Import-only check; we don't exercise the
+    # rasterizers because that would allocate a GL/CUDA context. `kaolin` is
+    # NVIDIA's geometry library — published as wheels only up to torch 2.2 on
+    # cu118 (https://nvidia-kaolin.s3.us-east-2.amazonaws.com/), so on torch
+    # 2.5.1+cu121 it has to be source-built.
+    native_modules = (
+        "kaolin",
+        "nvdiffrast",
+        "diff_gaussian_rasterization",
+        "diffoctreerast",
+        "vox2seq",
+    )
+    for module in native_modules:
+        try:
+            __import__(module)
+            print(f"  {module:<35} OK")
+        except ImportError:
+            print(f"  {module:<35} MISSING", file=sys.stderr)
+            missing.append(module)
+
+    upstream_root = Path(__file__).resolve().parent / "external" / "TRELLIS"
+    label = "external/TRELLIS"
+    if not (upstream_root / "trellis").is_dir():
+        print(f"  {label:<35} MISSING", file=sys.stderr)
+        print(
+            "  -> run `python install_trellis.py` to vendor the upstream tree.",
+            file=sys.stderr,
+        )
+        missing.append(label)
+    else:
+        sys.path.insert(0, str(upstream_root))
+        try:
+            __import__("trellis")
+            print(f"  {label:<35} OK")
+        except Exception as exc:  # noqa: BLE001 — surface any import-chain breakage
+            print(f"  {label:<35} IMPORT FAILED: {exc}", file=sys.stderr)
+            missing.append(label)
+        finally:
+            sys.path.remove(str(upstream_root))
+
     if missing:
         print(
-            "Trellis deps missing. See README.md §Trellis setup for Windows wheel sources.",
+            "TRELLIS deps missing. Fix path:\n"
+            "  pip install -r requirements-trellis.txt\n"
+            "  python install_trellis.py\n"
+            "  pip install external/TRELLIS-extensions/nvdiffrast\n"
+            "  pip install external/TRELLIS-extensions/diffoctreerast\n"
+            "  pip install external/TRELLIS-extensions/mip-splatting/submodules/diff-gaussian-rasterization\n"
+            "  pip install external/TRELLIS/extensions/vox2seq\n"
+            "See README.md §Trellis setup for the wheel-or-build matrix on Windows.",
             file=sys.stderr,
         )
         return 1

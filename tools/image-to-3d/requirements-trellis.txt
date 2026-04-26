@@ -1,0 +1,47 @@
+# TRELLIS Phase 4 — pip-installable dependencies (the *easy* path).
+#
+# Mirrors the `--basic` and `--demo` paths in upstream's setup.sh, but only
+# the deps that have prebuilt Windows + Python 3.12 + cu121 wheels and don't
+# touch torch's pin. Everything that needs the CUDA Toolkit or MSVC is
+# documented separately — see README §Trellis setup for the wheel-or-build
+# matrix.
+#
+# DO NOT add xformers here. Pip will resolve to xformers>=0.0.30 which
+# requires torch>=2.6 and silently rewrites our cu121 build to a CPU wheel.
+# See README §Trellis setup for the manual install step.
+
+# Core inference deps from upstream setup.sh:110.
+imageio
+imageio-ffmpeg
+easydict
+opencv-python-headless
+ninja
+onnxruntime
+open3d
+xatlas
+pyvista
+pymeshfix
+igraph
+
+# Pure-Python utility (upstream pins this exact commit).
+utils3d @ git+https://github.com/EasternJournalist/utils3d.git@9a4eb15e4021b67b12c460c7057d642626897ec8
+
+# Pillow / scipy / tqdm / rembg / trimesh / transformers are already pinned in
+# requirements.txt and requirements-instantmesh.txt — we don't restate them
+# here to avoid version drift.
+
+# DEPS THAT REQUIRE A SYSTEM-LEVEL TOOLCHAIN (install manually):
+#
+#   xformers           — wheel hunt; the version that ships a Win/py3.12/cu121
+#                        wheel is xformers==0.0.28.post3, but pip will not pick
+#                        it without --no-deps and a torch already pinned.
+#   spconv-cu121       — needs CUDA Toolkit 12.1 with nvcc on the system PATH
+#                        (`pip install spconv-cu121` succeeds but `import spconv`
+#                        fails with "Can't find cuda libraries").
+#   nvdiffrast,
+#   diff_gaussian_rasterization (mip-splatting submodule),
+#   diffoctreerast,
+#   vox2seq            — built from source via pip install of the cloned paths
+#                        under external/TRELLIS-extensions/ and
+#                        external/TRELLIS/extensions/vox2seq/. Each needs MSVC
+#                        2022 + Windows 10 SDK + CUDA Toolkit 12.1.
