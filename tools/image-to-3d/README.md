@@ -70,3 +70,28 @@ missing piece. The two common cases:
 - *`external/InstantMesh MISSING`* → run `python install_instantmesh.py`.
 - *`diffusers MISSING`* (or any other pip dep) → run
   `pip install -r requirements-instantmesh.txt` inside the venv.
+
+## Game handoff
+
+Vite serves the project's `public/` directory at the web root, so any GLB
+this tool writes to `public/models/generated/` is reachable at
+`http://localhost:5173/models/generated/<filename>.glb` while
+`npm run dev` is running.
+
+The Babylon `GameApp` exposes a dev-only loader for smoke-testing a fresh
+mesh in the live scene without rebuilding the app. With the dev server
+running, paste either of these into the browser devtools console:
+
+```js
+// Drop the mesh at the world origin.
+await window.game.loadGeneratedModel('cartoon_girl-20260426-143302-896.glb');
+
+// Or place it explicitly.
+await window.game.loadGeneratedModel(
+  'cartoon_girl-20260426-143302-896.glb',
+  { x: 0, y: 1, z: 0 },
+);
+```
+
+`window.game` is only attached under `import.meta.env.DEV`; production
+builds drop the hook.

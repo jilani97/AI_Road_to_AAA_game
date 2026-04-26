@@ -1,5 +1,11 @@
 import './style.css';
 import { GameApp } from './game/GameApp';
+
+declare global {
+  interface Window {
+    game?: GameApp;
+  }
+}
 import { getDifficulty, hydrateDifficulty, setDifficulty } from './game/difficulty';
 import {
   CHARACTER_ORDER,
@@ -763,3 +769,7 @@ if (reduceMotionInput) {
 
 game.start();
 applySettings();
+
+if (import.meta.env.DEV) {
+  window.game = game;
+}

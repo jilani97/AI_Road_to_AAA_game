@@ -419,6 +419,21 @@ export class GameApp {
     this.options.onAwaitingStart?.();
   }
 
+  public async loadGeneratedModel(
+    filename: string,
+    position: { x: number; y: number; z: number } = { x: 0, y: 0, z: 0 },
+  ): Promise<AbstractMesh> {
+    const result = await SceneLoader.ImportMeshAsync(
+      '',
+      '/models/generated/',
+      filename,
+      this.scene,
+    );
+    const root = result.meshes[0];
+    root.position = new Vector3(position.x, position.y, position.z);
+    return root;
+  }
+
   public start(): void {
     this.engine.runRenderLoop(() => {
       const now = performance.now();
