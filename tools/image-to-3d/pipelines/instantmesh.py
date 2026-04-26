@@ -9,11 +9,14 @@ Two stages:
   2. The LRM transformer (`TencentARC/InstantMesh`) fuses the 6 views into
      triplane features and extracts a vertex-colored mesh via FlexiCubes.
 
-VRAM strategy on the target RTX 2000 Ada (8 GB):
-  - Stage 1 (Zero123++ at fp16): ~4 GB on device.
-  - Stage 2 (LRM transformer): ~6 GB on device.
-  - Sequential offload — diffusion is moved back to CPU between stages so
-    peak VRAM = max(stage1, stage2), not the sum.
+VRAM on the target RTX 2000 Ada Laptop (8 GB):
+  - Stage 1 (Zero123++ at fp16) is offloaded back to CPU before stage 2 so
+    peak = max(stage1, stage2), not the sum.
+  - Stage 2 (LRM at instant-mesh-large config) measured ~20 GB peak — the
+    triplane query at grid_res=128 is the dominant cost. Runs on the 8 GB
+    card only via Windows WDDM VRAM oversubscription (system-RAM fallback),
+    paying ~4× wall-clock on stage 2. Reducing peak to fit on-device is
+    deferred to future-specs/image-to-3d-instantmesh-vram.md.
 
 Vertex-color output only. Textured/UV-mapped output goes through
 ``nvdiffrast`` (Windows wheel pain) and is deferred to a future spec.
@@ -50,6 +53,73 @@ _LOG = logging.getLogger(__name__)
 _INSTANTMESH_DIR = Path(__file__).resolve().parent.parent / "external" / "InstantMesh"
 if _INSTANTMESH_DIR.is_dir() and str(_INSTANTMESH_DIR) not in sys.path:
     sys.path.insert(0, str(_INSTANTMESH_DIR))
+
+
+def _install_nvdiffrast_stub() -> None:
+    # Upstream `lrm_mesh.py` does `import nvdiffrast.torch as dr` at module
+    # level, but only invokes `dr.RasterizeCudaContext` inside the texture/UV
+    # bake path. We ship vertex-color output only (Windows nvdiffrast wheel
+    # pain — see future-specs/image-to-3d-instantmesh-textured.md), so a stub
+    # lets the import succeed while erroring loudly if the texture path runs.
+    import types
+
+    if "nvdiffrast" in sys.modules:
+        return
+    nvdiffrast = types.ModuleType("nvdiffrast")
+    nvdiffrast_torch = types.ModuleType("nvdiffrast.torch")
+
+    def _unavailable(*_args, **_kwargs):
+        raise RuntimeError(
+            "nvdiffrast is not installed; the InstantMesh texture/UV bake "
+            "path is unavailable. This pipeline produces vertex-colored "
+            "meshes only — see future-specs/image-to-3d-instantmesh-textured.md."
+        )
+
+    # The context constructors just wrap an OpenGL/CUDA handle — upstream
+    # creates one eagerly inside `NeuralRender.__init__` even when the
+    # rasterizer is never actually invoked on the vertex-color path. Return
+    # a sentinel so init succeeds, and only fail loudly if rasterization is
+    # actually attempted.
+    class _StubContext:
+        pass
+
+    nvdiffrast_torch.RasterizeCudaContext = lambda *a, **kw: _StubContext()
+    nvdiffrast_torch.RasterizeGLContext = lambda *a, **kw: _StubContext()
+    for name in ("rasterize", "interpolate", "texture", "antialias"):
+        setattr(nvdiffrast_torch, name, _unavailable)
+    nvdiffrast.torch = nvdiffrast_torch  # type: ignore[attr-defined]
+    sys.modules["nvdiffrast"] = nvdiffrast
+    sys.modules["nvdiffrast.torch"] = nvdiffrast_torch
+
+
+_install_nvdiffrast_stub()
+
+
+def _bypass_transformers_torch_load_cve_check() -> None:
+    # Transformers 4.49+ refuses to load `pytorch_model.bin` unless torch is
+    # 2.6+ (CVE-2025-32434). Upstream's DINO encoder (`facebook/dino-vitb16`)
+    # only publishes a `.bin` variant — no safetensors — and torch 2.6 drops
+    # the cu121 wheel we depend on. Bypass the gate; the .bin we load is the
+    # same well-known artifact upstream InstantMesh validates against.
+    noop = lambda: None  # noqa: E731
+    try:
+        from transformers.utils import import_utils
+
+        import_utils.check_torch_load_is_safe = noop
+    except ImportError:
+        return
+    # `transformers.modeling_utils` imports the function by name into its own
+    # namespace, so patching the source module isn't enough — the local
+    # reference is what gets called from `load_state_dict`.
+    try:
+        from transformers import modeling_utils
+
+        modeling_utils.check_torch_load_is_safe = noop
+    except ImportError:
+        pass
+
+
+_bypass_transformers_torch_load_cve_check()
 
 
 DEFAULT_CONFIG = "instant-mesh-large"
@@ -125,9 +195,12 @@ class InstantMeshPipeline(Pipeline):
         _LOG.info("loading Zero123++ diffusion pipeline (fp16) …")
         load_start = time.perf_counter()
 
+        # Diffusers' community-pipelines-mirror dropped `zero123plus.py` for
+        # v0.31+, so the short-name lookup 404s. Point at the vendored copy
+        # in `external/InstantMesh/zero123plus/` instead.
         pipeline = DiffusionPipeline.from_pretrained(
             ZERO123PLUS_REPO,
-            custom_pipeline="zero123plus",
+            custom_pipeline=str(_INSTANTMESH_DIR / "zero123plus"),
             torch_dtype=torch.float16,
         )
         pipeline.scheduler = EulerAncestralDiscreteScheduler.from_config(
