@@ -154,4 +154,5 @@ Motivated by TripoSR producing a melted-blob mesh on a complex cyberpunk referen
 - [ ] `future-specs/image-to-3d-subfolders.md` — let the UI write to `creatures/` / `props/` / `buildings/` directly
 - [ ] `future-specs/image-to-3d-sidecar-json.md` — record source image + pipeline + timestamp alongside each GLB
 - [ ] `future-specs/image-to-3d-instantmesh-textured.md` — UV-mapped textured output for InstantMesh (requires `nvdiffrast`; vertex-color is the Phase 3.5 default)
+- [ ] `future-specs/image-to-3d-instantmesh-vram.md` — fit InstantMesh stage 2 in 8 GB on-device (chunked triplane queries or `instant-mesh-base` config); today it peaks at ~20 GB and runs only via Windows WDDM oversubscription, paying ~4× wall-clock on stage 2
 - [ ] `future-specs/image-to-3d-rigged-export.md` — rigged / animated mesh output (needs Blender scripting, not a candidate for the current tool)
