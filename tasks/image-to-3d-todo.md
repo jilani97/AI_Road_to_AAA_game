@@ -46,13 +46,14 @@ Ordered checklist for `tools/image-to-3d/`. Full spec in [image-to-3d-plan.md](.
 
 ## Phase 3 — Game integration
 
-- [ ] **3.1** Babylon smoke-test loader
-  - `GameApp.loadGeneratedModel(filename, position)` — dev-only
-  - `window.game = this` behind `import.meta.env.DEV`
-  - Manual devtools invocation loads mesh
-- [ ] **3.2** README snippet — game handoff
-  - How Vite serves `/models/generated/`
-  - Runnable devtools snippet
+- [x] **3.1** Babylon smoke-test loader
+  - `GameApp.loadGeneratedModel(filename, position)` — dev-only, returns the imported root mesh
+  - `window.game = game` attached in `main.ts` behind `import.meta.env.DEV`; tree-shaken from production
+  - `src/env.d.ts` references `vite/client` so `import.meta.env` is typed under the project's explicit `types` array
+  - Manual browser invocation not driven this session (no Chrome DevTools MCP); framework wiring verified via `tsc --noEmit`, vitest 192/192, and Vite serving the GLB at `model/gltf-binary`
+- [x] **3.2** README snippet — game handoff
+  - `tools/image-to-3d/README.md` "Game handoff" section explains Vite's `/models/generated/` URL convention
+  - Copy-paste devtools snippet for `window.game.loadGeneratedModel`
 
 ### Checkpoint 3 — End-to-end
 - [ ] Image → Gradio → GLB → Babylon scene via devtools
