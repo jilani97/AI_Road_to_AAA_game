@@ -104,25 +104,43 @@ Motivated by TripoSR producing a melted-blob mesh on a complex cyberpunk referen
 
 ## Phase 4 — Trellis pipeline (quality path, optional — only if InstantMesh insufficient)
 
-- [ ] **4.1** Deps + import probe
-  - `requirements-trellis.txt`: `torch-scatter`, `xformers`, `diff-gaussian-rasterization`, `nvdiffrast`
-  - `python convert.py --probe-trellis` checks imports
-  - Windows wheel sources documented in README
-- [ ] **4.2** Trellis pipeline (`pipelines/trellis.py`)
-  - FP16 + attention slicing + sequential CPU offload
-  - 512×512 input (not 1024) for VRAM budget
-  - **Auto-decimate** output to ~15 000 triangles via `trimesh.simplify.simplify_quadratic_decimation`; keep `<name>-source.glb` alongside for reference
-  - **Fallback:** swap to InstantMesh if VRAM ceiling hit — see Plan §Risks
-- [ ] **4.3** UI + CLI picker routes to Trellis
-  - Remove "not implemented" stub
-  - Staged progress bar (multi-view → mesh → texture)
+- [x] **4.1** Deps + import probe (cffb462)
+  - Native install on Windows blocked by four CUDA-extension wheel walls
+    (xformers, kaolin, nvdiffrast, diffoctreerast, diff-gaussian-rasterization,
+    vox2seq) — runtime moved to WSL instead; see commit body
+  - `python convert.py --probe-trellis` enumerates 11 pip modules + 5 native
+    extensions + the vendored upstream tree
+- [x] **4.2** Trellis pipeline (`pipelines/trellis.py`) — runs on WSL
+  - Windows-side `TrellisPipeline` subprocess-shells to `wsl/trellis_runner.py`
+    inside `~/trellis-venv` (the native install path is blocked by 4.1)
+  - Defaults: `simplify=0.95, texture_size=2048, ss_steps=12, slat_steps=12`
+    — operating point picked from the Phase 4.2 spike review (0.95 hides
+    marching-cubes noise; 2048 is the sharpness keeper)
+  - Optional Marigold-Normals post-bake (~8 s on Windows host) closes the
+    "feels like polygons" PBR ceiling; standalone tool at
+    `scripts/normal_bake.py` for ad-hoc baking on existing GLBs
+  - **Deferred per scope decision:** auto-decimation to 15k tris (TRELLIS's
+    own `simplify` parameter handles it); InstantMesh OOM-fallback (TRELLIS-WSL
+    and InstantMesh-Windows are different runtimes — fallback adds real
+    complexity; revisit only if OOMs actually happen in practice)
+- [x] **4.3** UI + CLI picker routes to Trellis
+  - convert.py `--pipeline trellis` runs end-to-end; sidecar meta records
+    all pipeline-specific knobs
+  - Gradio app pipes TRELLIS staged progress (load → bake → export →
+    normal-bake) through the same band InstantMesh uses
 - [ ] **4.4** README Trellis section
-  - Timing expectations, OOM guidance, Windows wheel notes
+  - Timing expectations (~30 s preprocess + 32 s pipeline load + ~1 min
+    inference + ~30 min texture-bake at 2048 + ~3 s Marigold = ~33 min total)
+  - WSL-only runtime, the wheel-walls reasoning
+  - HQ knobs (50/50 sampling steps) for occasional hero-asset runs
 
 ### Checkpoint 4 — Quality path
-- [ ] Trellis produces GLB in < 120 s
-- [ ] Peak VRAM < 8 GB
+- [ ] ~~Trellis produces GLB in < 120 s~~ — original target untenable on
+  this rig (texture-bake at 2048 is ~30 min). Quality bar passed instead;
+  speed is now an explicit tradeoff, not a regression.
+- [ ] Peak VRAM < 8 GB — not measured; runs without OOM on RTX 2000 Ada (8 GB)
 - [ ] **Human review:** Trellis quality premium is worth the wait vs TripoSR
+  — confirmed 2026-04-28 (with Marigold normal-bake closing the PBR gap)
 
 ## Phase 5 — Polish + docs
 

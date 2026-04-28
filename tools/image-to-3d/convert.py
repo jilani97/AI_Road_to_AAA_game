@@ -235,18 +235,7 @@ def convert_image(
     output_dir: Optional[Path],
     remove_background: bool,
 ) -> int:
-    # Validate pipeline before any heavy lifting — otherwise a --pipeline
-    # trellis request would trigger rembg's 176 MB ONNX download before
-    # landing on the "not yet implemented" stub.
-    if pipeline_name == "trellis":
-        print(
-            "Trellis pipeline not yet implemented. Lands in Phase 4 "
-            "(see tasks/image-to-3d-plan.md). Use --pipeline triposr or "
-            "--pipeline instantmesh for now.",
-            file=sys.stderr,
-        )
-        return 10
-    if pipeline_name not in ("triposr", "instantmesh"):
+    if pipeline_name not in ("triposr", "instantmesh", "trellis"):
         raise ValueError(f"unknown pipeline: {pipeline_name}")
 
     # Deferred imports — skip heavy modules when the user only wants --probe.
@@ -268,7 +257,7 @@ def convert_image(
             "mc_resolution": pipeline.mc_resolution,
             "device": pipeline.device,
         }
-    else:
+    elif pipeline_name == "instantmesh":
         from pipelines.instantmesh import InstantMeshPipeline
 
         pipeline = InstantMeshPipeline()
@@ -279,10 +268,22 @@ def convert_image(
             "seed": pipeline.seed,
             "device": pipeline.device,
         }
+    else:  # trellis
+        from pipelines.trellis import TrellisPipeline
+
+        pipeline = TrellisPipeline()
+        extra_meta = {
+            "simplify": pipeline.simplify,
+            "texture_size": pipeline.texture_size,
+            "ss_steps": pipeline.ss_steps,
+            "slat_steps": pipeline.slat_steps,
+            "seed": pipeline.seed,
+            "bake_normals": pipeline.bake_normals,
+        }
 
     scene = pipeline.generate(image)
 
-    output_path = resolve_output_path(input_path.name, out_dir=output_dir)
+    output_path = resolve_output_path(input_path.name, out_dir=output_dir, pipeline=pipeline_name)
     export_scene_to_glb(scene, output_path)
     meta_path = write_sidecar_meta(
         output_path,

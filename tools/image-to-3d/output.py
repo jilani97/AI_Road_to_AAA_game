@@ -49,17 +49,22 @@ def resolve_output_path(
     base_filename: str,
     out_dir: Optional[Path] = None,
     *,
+    pipeline: Optional[str] = None,
     now: Optional[datetime] = None,
 ) -> Path:
     """Return a timestamped GLB path. Creates the directory if missing.
 
-    ``base_filename`` may include an extension; it is stripped. The output
-    path is always ``<stem>-<YYYYMMDD-HHMMSS-ms>.glb``.
+    ``base_filename`` may include an extension; it is stripped. When
+    ``pipeline`` is given, the result is ``<stem>-<pipeline>-<ts>.glb``;
+    otherwise ``<stem>-<ts>.glb``. Including the pipeline lets the Babylon
+    dev loader auto-detect glTF up-axis (TRELLIS exports Y-up, others Z-up)
+    from the filename without reading the file.
     """
     directory = Path(out_dir) if out_dir is not None else default_output_dir()
     directory.mkdir(parents=True, exist_ok=True)
     stem = Path(base_filename).stem or "generated"
-    return directory / f"{stem}-{_timestamp(now)}.glb"
+    suffix = f"-{pipeline}" if pipeline else ""
+    return directory / f"{stem}{suffix}-{_timestamp(now)}.glb"
 
 
 def export_scene_to_glb(scene: trimesh.Scene, path: Path) -> None:

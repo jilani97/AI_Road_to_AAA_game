@@ -27,7 +27,7 @@ _LOG = logging.getLogger("image-to-3d.app")
 PIPELINE_CHOICES: list[tuple[str, str]] = [
     ("TripoSR — fast, low VRAM (~15 s/image on RTX 2000 Ada)", "triposr"),
     ("InstantMesh — multi-view fusion (~30–60 s, ~6.5 GB weights, vertex colours)", "instantmesh"),
-    ("Trellis — quality, higher VRAM (Phase 4 — not yet implemented)", "trellis"),
+    ("Trellis — quality (~3 min default / 35 min HQ, runs in WSL, UV-mapped + normals)", "trellis"),
 ]
 
 
@@ -47,11 +47,7 @@ def _generate(
     """
     if image is None:
         raise gr.Error("Drop an image before clicking Generate.")
-    if pipeline_name == "trellis":
-        raise gr.Error(
-            "Trellis is not yet implemented (Phase 4). Use TripoSR or InstantMesh."
-        )
-    if pipeline_name not in ("triposr", "instantmesh"):
+    if pipeline_name not in ("triposr", "instantmesh", "trellis"):
         raise gr.Error(f"Unknown pipeline: {pipeline_name!r}")
 
     # Deferred imports so boot doesn't pay any pipeline's load-on-first-call cost.
@@ -68,6 +64,11 @@ def _generate(
         progress(0.05, desc="Preprocessing image…")
         preprocessed = preprocess_image(image, remove_background=remove_background)
 
+        # Map pipeline-internal progress (0..1) to UI band 0.20..0.85 — same
+        # band for InstantMesh and Trellis since both run staged callbacks.
+        def _on_stage(fraction: float, message: str) -> None:
+            progress(0.20 + fraction * 0.65, desc=message)
+
         if pipeline_name == "triposr":
             from pipelines.triposr import TripoSRPipeline
 
@@ -79,12 +80,8 @@ def _generate(
                 "mc_resolution": pipeline.mc_resolution,
                 "device": pipeline.device,
             }
-        else:
+        elif pipeline_name == "instantmesh":
             from pipelines.instantmesh import InstantMeshPipeline
-
-            # Map pipeline-internal progress (0..1) to UI band 0.20..0.85.
-            def _on_stage(fraction: float, message: str) -> None:
-                progress(0.20 + fraction * 0.65, desc=message)
 
             pipeline = InstantMeshPipeline(progress_callback=_on_stage)
             progress(0.20, desc="Starting InstantMesh…")
@@ -96,9 +93,23 @@ def _generate(
                 "seed": pipeline.seed,
                 "device": pipeline.device,
             }
+        else:  # trellis
+            from pipelines.trellis import TrellisPipeline
+
+            pipeline = TrellisPipeline(progress_callback=_on_stage)
+            progress(0.20, desc="Starting Trellis (WSL)…")
+            scene = pipeline.generate(preprocessed)
+            extra = {
+                "simplify": pipeline.simplify,
+                "texture_size": pipeline.texture_size,
+                "ss_steps": pipeline.ss_steps,
+                "slat_steps": pipeline.slat_steps,
+                "seed": pipeline.seed,
+                "bake_normals": pipeline.bake_normals,
+            }
 
         progress(0.85, desc="Exporting GLB + sidecar…")
-        out_path = resolve_output_path("ui")
+        out_path = resolve_output_path("ui", pipeline=pipeline_name)
         export_scene_to_glb(scene, out_path)
         meta_path = write_sidecar_meta(
             out_path,
