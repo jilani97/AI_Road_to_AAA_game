@@ -310,15 +310,83 @@ def convert_image(
     return 0
 
 
+def convert_batch(
+    directory: Path,
+    pipeline_name: str,
+    output_dir: Optional[Path],
+    remove_background: bool,
+) -> int:
+    """Run `convert_image` on every supported image in ``directory`` (non-recursive).
+
+    Per-file errors are caught and logged so a single bad input doesn't
+    stop the queue. Returns 0 if every file succeeded, 13 otherwise.
+    """
+    from preprocessing import SUPPORTED_FORMATS
+
+    if not directory.is_dir():
+        print(f"batch directory not found: {directory}", file=sys.stderr)
+        return 11
+
+    inputs = sorted(
+        p for p in directory.iterdir()
+        if p.is_file() and p.suffix.lower() in SUPPORTED_FORMATS
+    )
+    if not inputs:
+        print(
+            f"no supported images in {directory} (looking for {sorted(SUPPORTED_FORMATS)})",
+            file=sys.stderr,
+        )
+        return 11
+
+    print(f"[batch] {len(inputs)} file(s) to process with {pipeline_name}")
+    batch_start = time.perf_counter()
+    successes: list[Path] = []
+    failures: list[tuple[Path, str]] = []
+
+    for idx, src in enumerate(inputs, start=1):
+        print(f"\n[batch] ({idx}/{len(inputs)}) {src.name}")
+        try:
+            rc = convert_image(
+                input_path=src,
+                pipeline_name=pipeline_name,
+                output_dir=output_dir,
+                remove_background=remove_background,
+            )
+        except Exception as exc:  # noqa: BLE001 — last-resort catch so batch continues
+            _LOG.exception("[batch] unexpected exception on %s", src.name)
+            failures.append((src, f"unexpected: {exc}"))
+            continue
+        if rc == 0:
+            successes.append(src)
+        else:
+            failures.append((src, f"exit {rc}"))
+
+    elapsed = time.perf_counter() - batch_start
+    print(f"\n[batch] done in {elapsed:.1f} s — {len(successes)} ok, {len(failures)} failed")
+    for src, why in failures:
+        print(f"  FAIL  {src.name}: {why}")
+    return 0 if not failures else 13
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Local image-to-3D converter (TripoSR + Trellis).",
+        description="Local image-to-3D converter (TripoSR + InstantMesh + Trellis).",
     )
     parser.add_argument(
         "input",
         nargs="?",
         type=Path,
-        help="Source image (JPG / PNG / WEBP). Omitted when using --probe.",
+        help="Source image (JPG / PNG / WEBP). Omitted when using --probe or --batch.",
+    )
+    parser.add_argument(
+        "--batch",
+        type=Path,
+        default=None,
+        metavar="DIR",
+        help=(
+            "Process every supported image in DIR (non-recursive). Per-file "
+            "errors are logged and skipped; exits 0 if all succeed, 13 otherwise."
+        ),
     )
     parser.add_argument(
         "--pipeline",
@@ -384,6 +452,20 @@ def main() -> int:
         return probe_trellis()
     if args.prefetch_weights:
         return prefetch_weights(args.prefetch_weights)
+
+    if args.batch is not None:
+        if args.input is not None:
+            print(
+                "--batch and a positional input are mutually exclusive — pick one.",
+                file=sys.stderr,
+            )
+            return 64
+        return convert_batch(
+            directory=args.batch,
+            pipeline_name=args.pipeline,
+            output_dir=args.output_dir,
+            remove_background=not args.no_bg_removal,
+        )
 
     if args.input is None:
         parser.print_help(sys.stderr)

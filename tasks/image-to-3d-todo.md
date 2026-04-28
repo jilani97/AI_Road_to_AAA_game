@@ -160,10 +160,11 @@ Motivated by TripoSR producing a melted-blob mesh on a complex cyberpunk referen
   - UI: Generate button chain disables → runs → re-enables (works for
     success and error paths because `_generate` returns an error state
     instead of raising `gr.Error`)
-- [ ] **5.3** Batch-mode CLI
-  - `--batch <dir>` walks folder
-  - Continues on per-file errors
-  - Final summary with counts
+- [x] **5.3** Batch-mode CLI
+  - `--batch <DIR>` walks folder (non-recursive — predictable scope)
+  - Per-file errors caught and logged; queue continues
+  - Summary at end with success/failure counts + per-failure reasons
+  - Exit 0 if all succeed, 13 if any failed, 11 if dir invalid / empty
 
 ### Checkpoint 5 — Ship-ready
 - [ ] Fresh-clone setup from README alone
