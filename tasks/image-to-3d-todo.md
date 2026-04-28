@@ -128,11 +128,12 @@ Motivated by TripoSR producing a melted-blob mesh on a complex cyberpunk referen
     all pipeline-specific knobs
   - Gradio app pipes TRELLIS staged progress (load → bake → export →
     normal-bake) through the same band InstantMesh uses
-- [ ] **4.4** README Trellis section
-  - Timing expectations (~30 s preprocess + 32 s pipeline load + ~1 min
-    inference + ~30 min texture-bake at 2048 + ~3 s Marigold = ~33 min total)
-  - WSL-only runtime, the wheel-walls reasoning
-  - HQ knobs (50/50 sampling steps) for occasional hero-asset runs
+- [x] **4.4** README Trellis section
+  - WSL-only runtime + the wheel-walls reasoning, one-time setup
+  - Timing table for default settings (~33 min total)
+  - Quality-knobs section explaining why defaults are what they are
+  - Probe-failure note (probe runs on Windows, will report extensions
+    missing — that's expected; the actual runtime check is in WSL)
 
 ### Checkpoint 4 — Quality path
 - [ ] ~~Trellis produces GLB in < 120 s~~ — original target untenable on
