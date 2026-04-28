@@ -422,6 +422,7 @@ export class GameApp {
   public async loadGeneratedModel(
     filename: string,
     position: { x: number; y: number; z: number } = { x: 0, y: 0, z: 0 },
+    options: { scale?: number; upAxis?: 'y' | 'z' } = {},
   ): Promise<AbstractMesh> {
     const result = await SceneLoader.ImportMeshAsync(
       '',
@@ -430,6 +431,16 @@ export class GameApp {
       this.scene,
     );
     const root = result.meshes[0];
+    // TRELLIS outputs glTF-canonical Y-up; InstantMesh / TripoSR output Z-up.
+    // Auto-detect from filename, overridable via options.upAxis.
+    const upAxis = options.upAxis ?? (filename.includes('trellis') ? 'y' : 'z');
+    root.rotationQuaternion = null;
+    root.rotation = upAxis === 'z'
+      ? new Vector3(Math.PI / 2, 0, 0)
+      : new Vector3(0, 0, 0);
+    if (options.scale !== undefined) {
+      root.scaling = new Vector3(options.scale, options.scale, options.scale);
+    }
     root.position = new Vector3(position.x, position.y, position.z);
     return root;
   }
