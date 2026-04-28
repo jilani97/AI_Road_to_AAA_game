@@ -145,11 +145,13 @@ Motivated by TripoSR producing a melted-blob mesh on a complex cyberpunk referen
 
 ## Phase 5 — Polish + docs
 
-- [ ] **5.1** Full README
-  - Prerequisites (Python 3.12 path, CUDA driver, disk space)
-  - Quickstart (TripoSR only, ≤ 10 commands)
-  - Full setup (Trellis, separate section)
-  - Troubleshooting matrix (OOM, CUDA mismatch, nvdiffrast, rembg, HF cache)
+- [x] **5.1** Full README
+  - Prerequisites (Python 3.12, CUDA 12.1+ driver, disk-space matrix per pipeline)
+  - Quickstart (TripoSR, 4 commands)
+  - Setup sections per pipeline (InstantMesh, Trellis already shipped)
+  - Troubleshooting matrix (InstantMesh OOM, zero123plus 404, prefetch
+    symlink, Trellis probe-missing, xformers cpu-torch upgrade, Trellis
+    timing, rembg stall)
 - [ ] **5.2** Input validation + UI error surfacing
   - Size / format / filesize guards pre-model-load
   - `OutOfMemoryError` → "Try TripoSR or smaller input"

@@ -1,4 +1,4 @@
-# Base requirements for tools/image-to-3d — installed into .venv (Python 3.11).
+# Base requirements for tools/image-to-3d — installed into .venv (Python 3.12).
 #
 # PyTorch CUDA 12.1 wheels come from the PyTorch index below. The driver on
 # the target machine (581.95) supports CUDA 12.1/12.4/12.6; cu121 is the

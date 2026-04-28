@@ -18,8 +18,50 @@ Pipelines (selectable in the UI and CLI):
 Fully offline after the first weight download.
 
 Planning docs live in `tasks/image-to-3d-plan.md` and
-`tasks/image-to-3d-todo.md`. Full setup + troubleshooting are added in
-Task 5.1; until then this is a stub.
+`tasks/image-to-3d-todo.md`.
+
+## Prerequisites
+
+- **Python 3.12** on PATH (`python --version` should report `3.12.x`).
+  3.11 likely works; nothing newer is tested.
+- **NVIDIA GPU** with a driver supporting CUDA 12.1 or later. The target
+  rig (RTX 2000 Ada Laptop, driver 581.95+) reports cu121/cu124/cu126;
+  we pin cu121 because it's the most-tested wheel set across all three
+  pipelines.
+- **Disk space** for weights:
+  | Pipeline | Cache | Size |
+  | --- | --- | --- |
+  | TripoSR | `~/.cache/huggingface/hub/` | ~1.6 GB |
+  | InstantMesh | `~/.cache/huggingface/hub/` | ~6.5 GB |
+  | Trellis | WSL `~/.cache/huggingface/hub/` | ~6 GB |
+  | Marigold-Normals (Trellis post-bake) | Windows `~/.cache/huggingface/hub/` | ~3.5 GB |
+- **For Trellis only:** WSL2 with Ubuntu, plus a CUDA Toolkit 12.1
+  matching the host driver (Trellis's four CUDA-built extensions need
+  `nvcc` to build inside WSL — see [Trellis setup](#trellis-setup)).
+
+## Quickstart (TripoSR)
+
+Fastest path; produces a vertex-colored GLB in ~15 s.
+
+```
+python -m venv tools/image-to-3d/.venv
+tools/image-to-3d/.venv/Scripts/pip install -r tools/image-to-3d/requirements.txt
+tools/image-to-3d/.venv/Scripts/python tools/image-to-3d/install_triposr.py
+tools/image-to-3d/.venv/Scripts/python tools/image-to-3d/convert.py path/to/your.png
+```
+
+Output lands in `public/models/generated/<stem>-triposr-<ts>.glb` plus a
+sidecar `<stem>-triposr-<ts>.meta.json` recording source image, pipeline,
+timestamp, and runtime stats. With the Babylon dev server (`npm run dev`)
+running, the GLB is reachable at
+`http://localhost:5173/models/generated/<filename>` — see [Game handoff](#game-handoff).
+
+For the Gradio UI instead of the CLI:
+
+```
+tools/image-to-3d/.venv/Scripts/python tools/image-to-3d/app.py
+# opens at http://127.0.0.1:7860
+```
 
 ## InstantMesh setup
 
@@ -197,6 +239,18 @@ wsl ~/trellis-venv/bin/python -c "import trellis; print('OK')"
 ```
 
 If the WSL `import trellis` works, the Windows pipeline will work.
+
+## Troubleshooting
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| `RuntimeError: CUDA out of memory` (InstantMesh stage 2) | LRM at `instant-mesh-large` peaks ~20 GB on the triplane query | The 8 GB card runs it via Windows WDDM oversubscription, paying ~4× wall-clock on stage 2. Reducing peak fits is `future-specs/image-to-3d-instantmesh-vram.md`. Use TripoSR for fast iteration. |
+| `OSError: 404 zero123plus.py` (InstantMesh) | Diffusers ≥ 0.31 dropped the community-pipelines mirror | Already patched: `pipelines/instantmesh.py` points `custom_pipeline` at the vendored copy under `external/InstantMesh/zero123plus/`. Make sure the vendored tree exists (`python install_instantmesh.py`). |
+| `WinError 1314: a required privilege is not held` (during `--prefetch-weights`) | HF Hub creates symlinks; Windows requires admin or Developer Mode | One-shot fix: run the prefetch terminal as administrator, or enable Developer Mode (Settings → System → For developers). After the first prefetch succeeds, normal-mode reads work fine. |
+| `--probe-trellis` reports four extensions missing | The CUDA-built extensions (`nvdiffrast`, `diffoctreerast`, `diff-gaussian-rasterization`, `vox2seq`) don't have Windows wheels for `torch 2.5.1+cu121` | Expected on Windows. The actual runtime is in WSL — see [Trellis setup](#trellis-setup). |
+| `pip install xformers` upgraded torch to 2.10+cpu | The xformers resolver picks the newest matching wheel, which often pulls cpu torch | Always install torch first from the cu121 index (`pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cu121`). For Trellis-WSL, install xformers explicitly from the same index. |
+| Trellis pipeline takes ~30 min | Texture-bake at 2048² is the dominant cost | This is by design — see the Trellis [Quality knobs](#quality-knobs) section. Drop `texture_size` to 1024 in `pipelines/trellis.py` for ~half the wall-clock at the cost of visibly softer detail. |
+| `rembg` first-call download stalls | The u2net ONNX download is from a flaky GitHub release | Run with `--no-bg-removal` if your input already has a clean alpha channel. The model lives at `~/.cache/u2net/u2net.onnx`; pre-place if you have a copy. |
 
 ## Game handoff
 
