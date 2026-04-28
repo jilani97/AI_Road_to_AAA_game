@@ -15,10 +15,16 @@ import pytest
 from PIL import Image
 
 from preprocessing import (
+    MAX_FILE_SIZE_MB,
+    MAX_IMAGE_DIMENSION,
+    MIN_IMAGE_DIMENSION,
     SUPPORTED_FORMATS,
+    InputValidationError,
     _crop_to_subject,
     _pad_to_square,
     load_and_prepare,
+    validate_input_image,
+    validate_input_path,
 )
 
 
@@ -41,8 +47,10 @@ def _draw_filled_rgb(size: tuple[int, int]) -> Image.Image:
 
 @pytest.fixture
 def transparent_png(tmp_path: Path) -> Path:
+    # Landscape; chosen so the short edge stays >= MIN_IMAGE_DIMENSION (256)
+    # so this fixture passes pre-pipeline validation.
     path = tmp_path / "transparent.png"
-    _draw_subject_rgba((400, 200)).save(path)  # landscape
+    _draw_subject_rgba((512, 256)).save(path)
     return path
 
 
@@ -144,3 +152,47 @@ class TestLoadAndPrepare:
         result = load_and_prepare(opaque_jpg, target_size=256)
         assert result.mode == "RGBA"
         assert result.size == (256, 256)
+
+
+class TestValidators:
+    def test_path_validation_accepts_a_normal_input(
+        self, transparent_png: Path
+    ) -> None:
+        resolved = validate_input_path(transparent_png)
+        assert resolved == transparent_png.resolve()
+
+    def test_path_validation_rejects_oversized_file(self, tmp_path: Path) -> None:
+        path = tmp_path / "huge.png"
+        path.write_bytes(b"\x00" * (MAX_FILE_SIZE_MB * 1024 * 1024 + 1))
+        with pytest.raises(InputValidationError, match=r"larger than the \d+ MB"):
+            validate_input_path(path)
+
+    def test_image_validation_rejects_below_min_dimension(self) -> None:
+        below = MIN_IMAGE_DIMENSION - 1
+        image = Image.new("RGB", (below, MIN_IMAGE_DIMENSION + 100))
+        with pytest.raises(InputValidationError, match="below the .* minimum"):
+            validate_input_image(image)
+
+    def test_image_validation_rejects_above_max_dimension(self) -> None:
+        above = MAX_IMAGE_DIMENSION + 1
+        image = Image.new("RGB", (above, MAX_IMAGE_DIMENSION))
+        with pytest.raises(InputValidationError, match="exceeds the .* maximum"):
+            validate_input_image(image)
+
+    def test_image_validation_accepts_at_min_dimension(self) -> None:
+        image = Image.new("RGB", (MIN_IMAGE_DIMENSION, MIN_IMAGE_DIMENSION))
+        validate_input_image(image)  # no raise
+
+    def test_image_validation_accepts_at_max_dimension(self) -> None:
+        image = Image.new("RGB", (MAX_IMAGE_DIMENSION, MAX_IMAGE_DIMENSION))
+        validate_input_image(image)  # no raise
+
+    def test_load_and_prepare_rejects_undersized_image(self, tmp_path: Path) -> None:
+        path = tmp_path / "tiny.png"
+        Image.new("RGBA", (128, 128)).save(path)
+        with pytest.raises(InputValidationError, match="below the .* minimum"):
+            load_and_prepare(path, remove_background=False)
+
+    def test_input_validation_error_subclasses_value_error(self) -> None:
+        # Existing callers that catch ValueError must keep working.
+        assert issubclass(InputValidationError, ValueError)

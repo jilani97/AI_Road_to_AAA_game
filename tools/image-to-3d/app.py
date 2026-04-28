@@ -31,6 +31,17 @@ PIPELINE_CHOICES: list[tuple[str, str]] = [
 ]
 
 
+def _error_state(message: str) -> tuple[None, str, str, "gr.update"]:
+    """Build the 4-tuple `_generate` returns when something goes wrong.
+
+    Returning an error state (instead of raising `gr.Error`) lets the
+    button.click().then() chain re-enable the Generate button on
+    failures the same way it does on success — gr.Error halts the chain
+    and would leave the button stuck disabled.
+    """
+    return (None, f"Error: {message}", "", gr.update(visible=False))
+
+
 def _generate(
     image: Optional[Image.Image],
     pipeline_name: str,
@@ -46,21 +57,28 @@ def _generate(
     as the Model3D source when it's a real filesystem path.
     """
     if image is None:
-        raise gr.Error("Drop an image before clicking Generate.")
+        return _error_state("Drop an image before clicking Generate.")
     if pipeline_name not in ("triposr", "instantmesh", "trellis"):
-        raise gr.Error(f"Unknown pipeline: {pipeline_name!r}")
+        return _error_state(f"Unknown pipeline: {pipeline_name!r}")
 
     # Deferred imports so boot doesn't pay any pipeline's load-on-first-call cost.
+    from errors import friendly_pipeline_error
     from output import (
         export_scene_to_glb,
         resolve_output_path,
         write_sidecar_meta,
     )
-    from preprocessing import preprocess_image
+    from preprocessing import (
+        InputValidationError,
+        preprocess_image,
+        validate_input_image,
+    )
 
     start = time.perf_counter()
 
     try:
+        progress(0.02, desc="Validating input…")
+        validate_input_image(image)
         progress(0.05, desc="Preprocessing image…")
         preprocessed = preprocess_image(image, remove_background=remove_background)
 
@@ -123,10 +141,12 @@ def _generate(
             },
         )
         progress(1.0, desc="Done")
+    except InputValidationError as exc:
+        _LOG.warning("input validation failed: %s", exc)
+        return _error_state(str(exc))
     except Exception as exc:
         _LOG.exception("generation failed")
-        # Gradio's gr.Error surfaces as a toast in the UI.
-        raise gr.Error(f"Generation failed: {exc}") from exc
+        return _error_state(friendly_pipeline_error(exc, pipeline_name))
 
     elapsed = time.perf_counter() - start
     tri_count = sum(
@@ -200,17 +220,29 @@ def build_ui() -> gr.Blocks:
                     visible=False,
                 )
 
+        # Three-stage chain: disable the button, run generation, re-enable.
+        # Re-enable runs whether _generate succeeded or surfaced an error
+        # state (it never raises) — gr.Error would halt the chain.
         generate_btn.click(
+            fn=lambda: gr.update(interactive=False, value="Working…"),
+            inputs=None,
+            outputs=generate_btn,
+        ).then(
             fn=_generate,
             inputs=[image_input, pipeline_radio, remove_bg_checkbox],
             outputs=[model_output, status, path_output, download_btn],
+        ).then(
+            fn=lambda: gr.update(interactive=True, value="Generate"),
+            inputs=None,
+            outputs=generate_btn,
         )
 
         gr.Markdown(
             """
             Pipelines: **TripoSR** (MIT, fast), **InstantMesh**
             (Apache 2.0, multi-view fusion via Zero123++, vertex colours),
-            **Trellis** (MIT, quality — Phase 4, not yet implemented).
+            **Trellis** (MIT, quality — UV-mapped textures + Marigold normals,
+            runs in WSL, ~33 min/asset).
             First TripoSR call downloads ~1.6 GB of weights; first InstantMesh
             call ~6.5 GB. Run `convert.py --prefetch-weights instantmesh`
             ahead of time to avoid the surprise. Offline after the cache fills.

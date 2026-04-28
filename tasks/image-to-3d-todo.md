@@ -152,10 +152,14 @@ Motivated by TripoSR producing a melted-blob mesh on a complex cyberpunk referen
   - Troubleshooting matrix (InstantMesh OOM, zero123plus 404, prefetch
     symlink, Trellis probe-missing, xformers cpu-torch upgrade, Trellis
     timing, rembg stall)
-- [ ] **5.2** Input validation + UI error surfacing
-  - Size / format / filesize guards pre-model-load
-  - `OutOfMemoryError` → "Try TripoSR or smaller input"
-  - Disable Generate button during inference
+- [x] **5.2** Input validation + UI error surfacing
+  - `validate_input_path` + `validate_input_image` in preprocessing.py
+    (file size ≤ 50 MB, dimensions in [256, 4096])
+  - CLI: invalid input → exit 11; pipeline failure → exit 12 with the
+    friendly OOM hint per `errors.py`
+  - UI: Generate button chain disables → runs → re-enables (works for
+    success and error paths because `_generate` returns an error state
+    instead of raising `gr.Error`)
 - [ ] **5.3** Batch-mode CLI
   - `--batch <dir>` walks folder
   - Continues on per-file errors

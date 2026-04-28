@@ -239,13 +239,18 @@ def convert_image(
         raise ValueError(f"unknown pipeline: {pipeline_name}")
 
     # Deferred imports — skip heavy modules when the user only wants --probe.
+    from errors import friendly_pipeline_error
     from output import export_scene_to_glb, resolve_output_path, write_sidecar_meta
-    from preprocessing import load_and_prepare
+    from preprocessing import InputValidationError, load_and_prepare
 
     total_start = time.perf_counter()
 
     _LOG.info("preprocessing %s (remove_background=%s)", input_path, remove_background)
-    image = load_and_prepare(input_path, remove_background=remove_background)
+    try:
+        image = load_and_prepare(input_path, remove_background=remove_background)
+    except (InputValidationError, FileNotFoundError) as exc:
+        print(f"input rejected: {exc}", file=sys.stderr)
+        return 11
 
     _LOG.info("running pipeline %s", pipeline_name)
     if pipeline_name == "triposr":
@@ -281,7 +286,12 @@ def convert_image(
             "bake_normals": pipeline.bake_normals,
         }
 
-    scene = pipeline.generate(image)
+    try:
+        scene = pipeline.generate(image)
+    except Exception as exc:
+        _LOG.exception("pipeline %s failed", pipeline_name)
+        print(friendly_pipeline_error(exc, pipeline_name), file=sys.stderr)
+        return 12
 
     output_path = resolve_output_path(input_path.name, out_dir=output_dir, pipeline=pipeline_name)
     export_scene_to_glb(scene, output_path)

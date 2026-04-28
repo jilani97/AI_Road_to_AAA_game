@@ -24,6 +24,72 @@ SUPPORTED_FORMATS: Final[frozenset[str]] = frozenset(
 )
 """Image extensions accepted by `load_and_prepare`."""
 
+MAX_FILE_SIZE_MB: Final[int] = 50
+"""Reject inputs larger than this on disk. High-res concept art tops out at
+~20 MB in practice; anything over 50 MB usually means the user dropped a
+lossless DSLR frame in by accident."""
+
+MIN_IMAGE_DIMENSION: Final[int] = 256
+"""Inputs smaller than this on the long edge don't carry enough signal for
+any of the pipelines to produce a usable mesh — fail early instead of
+running a 30-min Trellis bake on noise."""
+
+MAX_IMAGE_DIMENSION: Final[int] = 4096
+"""Cap to keep PIL out of `Image.DecompressionBombError` territory and
+ensure preprocessing's resize step starts from a sane base."""
+
+
+class InputValidationError(ValueError):
+    """Raised when an input image fails pre-pipeline validation. Subclasses
+    ValueError so existing ``except ValueError`` callers still catch it."""
+
+
+def validate_input_path(path: Path | str) -> Path:
+    """Filesystem-side checks: path exists, extension is supported, file is
+    not absurdly large. Returns the resolved Path on success.
+
+    Called by the CLI before any heavy import. UI inputs go through
+    `validate_input_image` instead — Gradio hands us a PIL image, not a
+    path.
+    """
+    path = Path(path)
+    if not path.exists():
+        raise FileNotFoundError(path)
+    if path.suffix.lower() not in SUPPORTED_FORMATS:
+        raise InputValidationError(
+            f"unsupported image format: {path.suffix!r} "
+            f"(supported: {sorted(SUPPORTED_FORMATS)})"
+        )
+    size_mb = path.stat().st_size / (1024 * 1024)
+    if size_mb > MAX_FILE_SIZE_MB:
+        raise InputValidationError(
+            f"input file is {size_mb:.1f} MB, larger than the {MAX_FILE_SIZE_MB} MB "
+            f"limit. Re-export at a saner resolution; the pipelines downsample "
+            f"to 512² or 1024² regardless."
+        )
+    return path
+
+
+def validate_input_image(image: Image.Image) -> None:
+    """In-memory checks: dimensions are within bounds, image decodes cleanly.
+    Raises ``InputValidationError`` on failure with a message suitable for
+    surfacing to the user (CLI stderr or Gradio toast)."""
+    width, height = image.size
+    long_edge = max(width, height)
+    short_edge = min(width, height)
+    if short_edge < MIN_IMAGE_DIMENSION:
+        raise InputValidationError(
+            f"input image is {width}×{height}; short edge ({short_edge}) is "
+            f"below the {MIN_IMAGE_DIMENSION}-pixel minimum. The pipelines "
+            f"need at least that much signal to produce a usable mesh."
+        )
+    if long_edge > MAX_IMAGE_DIMENSION:
+        raise InputValidationError(
+            f"input image is {width}×{height}; long edge ({long_edge}) "
+            f"exceeds the {MAX_IMAGE_DIMENSION}-pixel maximum. Downscale "
+            f"before feeding it in — preprocessing resizes to 512² anyway."
+        )
+
 
 def load_and_prepare(
     path: Path | str,
@@ -32,24 +98,20 @@ def load_and_prepare(
 ) -> Image.Image:
     """Load a 2-D image from disk and return a pipeline-ready RGBA square.
 
-    Thin wrapper around ``preprocess_image`` that adds file I/O + extension
-    validation. Used by the CLI; the UI calls ``preprocess_image`` directly
-    on Gradio's uploaded PIL image.
+    Thin wrapper around ``preprocess_image`` that adds file I/O + format
+    + dimension validation. Used by the CLI; the UI calls
+    ``preprocess_image`` directly on Gradio's uploaded PIL image after
+    calling ``validate_input_image`` itself.
 
     Raises:
       FileNotFoundError: path does not exist.
-      ValueError: unsupported extension.
+      InputValidationError: unsupported extension, oversized file, or
+        out-of-range dimensions.
     """
-    path = Path(path)
-    if path.suffix.lower() not in SUPPORTED_FORMATS:
-        raise ValueError(
-            f"unsupported image format: {path.suffix!r} "
-            f"(supported: {sorted(SUPPORTED_FORMATS)})"
-        )
-    if not path.exists():
-        raise FileNotFoundError(path)
-
-    return preprocess_image(Image.open(path), target_size, remove_background)
+    path = validate_input_path(path)
+    image = Image.open(path)
+    validate_input_image(image)
+    return preprocess_image(image, target_size, remove_background)
 
 
 def preprocess_image(
